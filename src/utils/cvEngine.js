@@ -105,10 +105,13 @@ export async function analyzeFrame(base64Image) {
     return { error: 'API Key Roboflow Belum Dikonfigurasi di Environment' };
   }
 
+  const workspace = import.meta.env.VITE_ROBOFLOW_WORKSPACE || "hka-maps";
+  const workflowId = import.meta.env.VITE_ROBOFLOW_WORKFLOW || "highway-pipeline";
+
   try {
-    const WORKFLOW_URL = `https://detect.roboflow.com/infer/workflows/hka-maps/highway-pipeline`;
+    const WORKFLOW_URL = `https://detect.roboflow.com/infer/workflows/${workspace}/${workflowId}`;
     const payload = {
-        api_key: ROBOFLOW_API_KEY || "x7SrAJhRbVnnDyv45CRG",
+        api_key: ROBOFLOW_API_KEY,
         inputs: {
             image: {
                 type: "base64",
@@ -117,15 +120,40 @@ export async function analyzeFrame(base64Image) {
         }
     };
 
-    const response = await fetch(WORKFLOW_URL, {
+    let response = await fetch(WORKFLOW_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
     });
 
+    // Fallback: Jika Workflow 404 (Workspace/WorkflowID invalid), jalankan Object Detection standar!
+    if (response.status === 404) {
+      console.warn("Workflow 404 Not Found. Menggunakan Fallback Object Detection API (Tanpa Tracker). Pastikan Workspace/Workflow ID Roboflow benar.");
+      response = await fetch(
+        `https://detect.roboflow.com/${ROBOFLOW_MODEL_ID}?api_key=${ROBOFLOW_API_KEY}&confidence=40&overlap=30`,
+        {
+          method: 'POST',
+          body: base64Image,
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        }
+      );
+      
+      if (!response.ok) {
+        const errText = await response.text();
+        return { error: `Roboflow API Fallback Error: ${response.status} - ${errText}` };
+      }
+
+      const dataObj = await response.json();
+      const predictions = dataObj.predictions || [];
+      // Berikan pseudo-tracker_id agar code UI tidak error
+      const pseudoTracked = predictions.map((p, idx) => ({ ...p, tracker_id: \`fallback_\${idx}\` }));
+      const result = classifyPredictions(pseudoTracked);
+      return { ...result, rawTracked: pseudoTracked };
+    }
+
     if (!response.ok) {
       const errText = await response.text();
-      console.error('Roboflow API error:', response.status, errText);
+      console.error('Roboflow Workflow API error:', response.status, errText);
       return { error: `Roboflow API Error: ${response.status} - Pastikan API Key Valid` };
     }
 
@@ -143,6 +171,7 @@ export async function analyzeFrame(base64Image) {
     return { error: `Gagal menghubungi server Roboflow: ${err.message}` };
   }
 }
+
 
 
 /**
