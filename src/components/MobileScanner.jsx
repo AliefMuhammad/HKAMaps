@@ -55,13 +55,15 @@ export default function MobileScanner() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [scanStartTime, setScanStartTime] = useState(null);
   const [autoMode, setAutoMode] = useState(true);
-  const [scanInterval, setScanInterval] = useState(5); // seconds
+  const [detectionMode, setDetectionMode] = useState('keduanya'); // 'keduanya', 'hanya_asset', 'hanya_kerusakan'
 
   // Upload
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const lastUploadRef = useRef(0);
+  const [selectedSegmentId, setSelectedSegmentId] = useState(null);
 
-  // ---- Fetch toll roads on mount ----
+  // ---- Fetch toll roads & default segment on mount ----
   useEffect(() => {
     async function loadTollRoads() {
       if (isSupabaseConnected()) {
@@ -71,6 +73,17 @@ export default function MobileScanner() {
     }
     loadTollRoads();
   }, []);
+
+  useEffect(() => {
+    if (selectedTollRoadId && isSupabaseConnected()) {
+      supabase.from('road_segments').select('id').eq('toll_road_id', selectedTollRoadId).limit(1)
+        .then(({ data }) => {
+          if (data && data.length > 0) setSelectedSegmentId(data[0].id);
+        });
+    } else {
+      setSelectedSegmentId(null);
+    }
+  }, [selectedTollRoadId]);
 
   // ---- Start camera ----
   const startCamera = useCallback(async () => {
@@ -154,6 +167,111 @@ export default function MobileScanner() {
     return () => stopAll();
   }, [stopAll]);
 
+  // ---- Bake Detections To Blob ----
+  const bakeDetectionsToBlob = async (dataUrl, result, frameW, frameH) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = frameW;
+        canvas.height = frameH;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, frameW, frameH);
+
+        result.damages.forEach(d => {
+          const x = (d.bbox.x - d.bbox.width / 2);
+          const y = (d.bbox.y - d.bbox.height / 2);
+          const w = d.bbox.width;
+          const h = d.bbox.height;
+          ctx.strokeStyle = SEVERITY_COLORS[d.severity] || '#EF4444';
+          ctx.lineWidth = 3;
+          ctx.strokeRect(x, y, w, h);
+          ctx.fillStyle = SEVERITY_COLORS[d.severity] || '#EF4444';
+          ctx.fillRect(x, y - 22, ctx.measureText(`${d.type} ${d.confidence}%`).width + 12, 22);
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 12px sans-serif';
+          ctx.fillText(`${d.type} ${d.confidence}%`, x + 4, y - 6);
+        });
+
+        result.assets.forEach(a => {
+          const x = (a.bbox.x - a.bbox.width / 2);
+          const y = (a.bbox.y - a.bbox.height / 2);
+          const w = a.bbox.width;
+          const h = a.bbox.height;
+          ctx.strokeStyle = '#3B82F6';
+          ctx.lineWidth = 3;
+          ctx.setLineDash([6, 3]);
+          ctx.strokeRect(x, y, w, h);
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#3B82F6';
+          ctx.fillRect(x, y - 22, ctx.measureText(`${a.type} ${a.confidence}%`).width + 12, 22);
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 12px sans-serif';
+          ctx.fillText(`${a.type} ${a.confidence}%`, x + 4, y - 6);
+        });
+
+        canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.8);
+      };
+      img.src = dataUrl;
+    });
+  };
+
+  // ---- Auto-Upload Background Request ----
+  const autoUploadDetection = async (det) => {
+    if (!isSupabaseConnected()) return;
+    try {
+      let imageUrl = null;
+      if (det.imageBlob) {
+        const fileName = `scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
+        const { data: uploadData } = await supabase.storage
+          .from('scan-photos')
+          .upload(fileName, det.imageBlob, { contentType: 'image/jpeg' });
+        if (uploadData) {
+          const { data: urlData } = supabase.storage.from('scan-photos').getPublicUrl(fileName);
+          imageUrl = urlData?.publicUrl;
+        }
+      }
+
+      const tasks = [];
+      
+      for (const dmg of det.damages) {
+        if (!det.position || !selectedSegmentId) continue;
+        tasks.push(supabase.from('damage_reports').insert({
+          segment_id: selectedSegmentId,
+          damage_type: dmg.type,
+          severity: dmg.severity,
+          lat: det.position.lat,
+          lng: det.position.lng,
+          distance_meter: 0,
+          quarter_period: `${new Date().getFullYear()}-Q${Math.ceil((new Date().getMonth() + 1) / 3)}`,
+          image_url: imageUrl,
+          ai_confidence: dmg.confidence,
+          source: 'ai_scanner',
+          scanned_at: det.timestamp,
+        }));
+      }
+
+      for (const ast of det.assets) {
+         if (!det.position) continue;
+         tasks.push(supabase.from('toll_assets').insert({
+           toll_road_id: selectedTollRoadId || null,
+           asset_type: ast.type,
+           lat: det.position.lat,
+           lng: det.position.lng,
+           condition: ast.condition,
+           image_url: imageUrl,
+           ai_confidence: ast.confidence,
+           scanned_at: det.timestamp,
+         }));
+      }
+
+      await Promise.all(tasks);
+      console.log('✅ Auto-uploaded 1 detection batch');
+    } catch (e) {
+      console.error('Auto upload error:', e);
+    }
+  };
+
   // ---- Capture & Analyze single frame ----
   const captureAndAnalyze = useCallback(async () => {
     if (!videoRef.current || !cameraReady || isAnalyzing) return;
@@ -162,7 +280,6 @@ export default function MobileScanner() {
     try {
       const frame = captureFrameAsBase64(videoRef.current);
       if (!frame) {
-        // Video belum siap, skip
         setIsAnalyzing(false);
         return;
       }
@@ -170,30 +287,48 @@ export default function MobileScanner() {
 
       setScanCount(prev => prev + 1);
 
-      if (result.damages.length > 0 || result.assets.length > 0) {
+      let finalDamages = result.damages;
+      let finalAssets = result.assets;
+      if (detectionMode === 'hanya_asset') finalDamages = [];
+      if (detectionMode === 'hanya_kerusakan') finalAssets = [];
+
+      if (finalDamages.length > 0 || finalAssets.length > 0) {
+        drawDetections({ damages: finalDamages, assets: finalAssets }, frame.width, frame.height);
+
+        const bakedBlob = await bakeDetectionsToBlob(
+          frame.dataUrl, 
+          { damages: finalDamages, assets: finalAssets }, 
+          frame.width, 
+          frame.height
+        );
+
         const detection = {
           id: `det-${Date.now()}`,
           timestamp: new Date().toISOString(),
           position: currentPos ? { ...currentPos } : null,
-          imageDataUrl: frame.dataUrl,
-          imageBlob: frame.blob,
-          damages: result.damages,
-          assets: result.assets,
+          imageDataUrl: URL.createObjectURL(bakedBlob),
+          imageBlob: bakedBlob,
+          damages: finalDamages,
+          assets: finalAssets,
           frameSize: { width: frame.width, height: frame.height },
         };
 
         setLastDetection(detection);
         setDetectionQueue(prev => [...prev, detection]);
 
-        // Draw bounding boxes
-        drawDetections(result, frame.width, frame.height);
+        // Auto-upload if no cooldown (3 seconds throttle per upload batch)
+        const now = Date.now();
+        if (now - lastUploadRef.current > 3000) {
+           lastUploadRef.current = now;
+           autoUploadDetection(detection);
+        }
       }
     } catch (err) {
       console.error('Analysis error:', err);
     } finally {
       setIsAnalyzing(false);
     }
-  }, [cameraReady, isAnalyzing, currentPos]);
+  }, [cameraReady, isAnalyzing, currentPos, detectionMode, selectedSegmentId, selectedTollRoadId]);
 
   // ---- Draw bounding boxes on overlay canvas ----
   const drawDetections = useCallback((result, frameW, frameH) => {
@@ -250,18 +385,28 @@ export default function MobileScanner() {
     }, 2500);
   }, []);
 
-  // ---- Auto-scan interval ----
+  // ---- Auto-scan loop (Real-time polling) ----
   useEffect(() => {
-    if (isScanning && autoMode) {
-      scanIntervalRef.current = setInterval(() => {
-        captureAndAnalyze();
-      }, scanInterval * 1000);
+    let active = true;
 
-      return () => {
-        if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
-      };
+    const runLoop = async () => {
+      while (active && isScanning && autoMode) {
+        if (!isAnalyzing && cameraReady) {
+          await captureAndAnalyze();
+        }
+        // Jeda minimal agar tidak freeze UI
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    };
+
+    if (isScanning && autoMode) {
+      runLoop();
     }
-  }, [isScanning, autoMode, scanInterval, captureAndAnalyze]);
+
+    return () => {
+      active = false;
+    };
+  }, [isScanning, autoMode, cameraReady, isAnalyzing, captureAndAnalyze]);
 
   // ---- Begin scanning session ----
   const beginSession = () => {
@@ -436,24 +581,30 @@ export default function MobileScanner() {
             </select>
           </div>
 
-          {/* Scan Interval */}
+          {/* Filter Selection */}
           <div>
-            <label className="text-xs text-surface-400 uppercase tracking-wider mb-2 block">Interval Scan Otomatis</label>
-            <div className="flex items-center gap-3">
-              {[3, 5, 10, 15].map(sec => (
-                <button
-                  key={sec}
-                  onClick={() => setScanInterval(sec)}
-                  className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-colors ${
-                    scanInterval === sec
-                      ? 'bg-hka-red text-white'
-                      : 'bg-surface-700 text-surface-300 hover:bg-surface-600'
-                  }`}
-                >
-                  {sec}s
-                </button>
-              ))}
+            <label className="text-xs text-surface-400 uppercase tracking-wider mb-2 block">Tipe Deteksi</label>
+            <div className="flex bg-surface-700/60 p-1 rounded-xl">
+              {['Keduanya', 'Hanya Aset', 'Hanya Kerusakan'].map(mode => {
+                const mapValue = mode === 'Keduanya' ? 'keduanya' : mode === 'Hanya Aset' ? 'hanya_asset' : 'hanya_kerusakan';
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => setDetectionMode(mapValue)}
+                    className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-colors ${
+                      detectionMode === mapValue
+                        ? 'bg-hka-red text-white shadow'
+                        : 'text-surface-300 hover:text-white'
+                    }`}
+                  >
+                    {mode}
+                  </button>
+                );
+              })}
             </div>
+            <p className="text-[10px] text-surface-500 mt-2 px-1">
+              ✨ Scan berjalan <span className="text-hka-red font-semibold">Real-time</span> dan akan di-upload seketika saat terdeteksi.
+            </p>
           </div>
 
           {/* Features */}
@@ -684,30 +835,14 @@ export default function MobileScanner() {
 
       {/* Bottom Actions */}
       <div className="fixed bottom-0 left-0 right-0 bg-surface-900/95 backdrop-blur-sm border-t border-white/10 p-4 safe-area-bottom">
-        {isUploading ? (
-          <div className="space-y-2">
-            <div className="w-full bg-surface-700 rounded-full h-2">
-              <div className="bg-hka-red h-2 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
-            </div>
-            <p className="text-center text-xs text-surface-400">Mengunggah {uploadProgress}%...</p>
-          </div>
-        ) : (
-          <div className="flex gap-3">
-            <button
-              onClick={uploadToSupabase}
-              disabled={detectionQueue.length === 0}
-              className="flex-1 py-3 bg-gradient-to-r from-hka-red to-red-600 text-white text-sm font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg disabled:opacity-40"
-            >
-              <Upload size={18} /> Upload ke Supabase ({detectionQueue.length} deteksi)
-            </button>
-            <button
-              onClick={() => navigate('/')}
-              className="px-4 py-3 bg-surface-700 rounded-xl text-surface-300 text-sm font-semibold"
-            >
-              Dashboard
-            </button>
-          </div>
-        )}
+        <div className="flex gap-3">
+          <button
+            onClick={() => navigate('/')}
+            className="flex-1 py-3 bg-gradient-to-r from-surface-700 to-surface-600 rounded-xl text-white text-sm font-bold shadow-lg"
+          >
+            Selesai & Kembali ke Dashboard
+          </button>
+        </div>
       </div>
     </div>
   );
