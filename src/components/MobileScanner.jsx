@@ -51,6 +51,7 @@ export default function MobileScanner() {
   const [isScanning, setIsScanning] = useState(false);
   const [scanCount, setScanCount] = useState(0);
   const [lastDetection, setLastDetection] = useState(null);
+  const [currentFrameStats, setCurrentFrameStats] = useState({ damages: [], assets: [] });
   const [detectionQueue, setDetectionQueue] = useState([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [scanStartTime, setScanStartTime] = useState(null);
@@ -292,9 +293,10 @@ export default function MobileScanner() {
       if (detectionMode === 'hanya_asset') finalDamages = [];
       if (detectionMode === 'hanya_kerusakan') finalAssets = [];
 
-      if (finalDamages.length > 0 || finalAssets.length > 0) {
-        drawDetections({ damages: finalDamages, assets: finalAssets }, frame.width, frame.height);
+      setCurrentFrameStats({ damages: finalDamages, assets: finalAssets });
+      drawDetections({ damages: finalDamages, assets: finalAssets }, frame.width, frame.height);
 
+      if (finalDamages.length > 0 || finalAssets.length > 0) {
         const bakedBlob = await bakeDetectionsToBlob(
           frame.dataUrl, 
           { damages: finalDamages, assets: finalAssets }, 
@@ -378,11 +380,6 @@ export default function MobileScanner() {
       ctx.font = 'bold 12px sans-serif';
       ctx.fillText(`${a.type} ${a.confidence}%`, x + 4, y - 6);
     });
-
-    // Auto-clear after 2.5s
-    setTimeout(() => {
-      if (canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }, 2500);
   }, []);
 
   // ---- Auto-scan loop (Real-time polling) ----
@@ -661,29 +658,55 @@ export default function MobileScanner() {
 
           {/* AI Analyzing Indicator */}
           {isAnalyzing && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-hka-red/90 text-white px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 animate-pulse z-20">
+            <div className="absolute top-[140px] left-1/2 -translate-x-1/2 bg-hka-red/90 text-white px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 animate-pulse z-20">
               <Loader2 size={14} className="animate-spin" /> Menganalisis...
             </div>
           )}
 
-          {/* Last Detection Toast */}
-          {lastDetection && (lastDetection.damages.length > 0 || lastDetection.assets.length > 0) && (
-            <div className="absolute top-4 right-4 bg-white/95 backdrop-blur-sm text-surface-800 rounded-xl p-3 shadow-xl z-20 max-w-[200px] animate-in slide-in-from-right">
-              <p className="text-[10px] text-surface-400 font-semibold mb-1">TERDETEKSI:</p>
-              {lastDetection.damages.map((d, i) => (
-                <p key={i} className="text-xs flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full" style={{background: SEVERITY_COLORS[d.severity]}} />
-                  {d.type} <span className="text-surface-400">({d.confidence}%)</span>
-                </p>
-              ))}
-              {lastDetection.assets.map((a, i) => (
-                <p key={i} className="text-xs flex items-center gap-1">
-                  <span>{ASSET_ICONS[a.type]}</span>
-                  {a.type} <span className="text-surface-400">({a.confidence}%)</span>
-                </p>
-              ))}
-            </div>
-          )}
+          {/* Top Real-time Indicators */}
+          <div className="absolute top-4 inset-x-4 z-20 flex flex-col gap-2 pointer-events-none">
+            {/* Kerusakan Panel */}
+            {detectionMode !== 'hanya_asset' && (
+              <div className="bg-surface-900/80 backdrop-blur-md rounded-xl p-3 border border-red-500/30 shadow-xl">
+                <p className="text-[10px] text-surface-400 font-bold mb-1.5 uppercase tracking-wider">Kerusakan Jalan</p>
+                {currentFrameStats.damages.length === 0 ? (
+                  <p className="text-xs text-green-400 font-semibold flex items-center gap-1">✅ Tidak ada kerusakan</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(currentFrameStats.damages.reduce((acc, d) => {
+                      acc[d.type] = (acc[d.type] || 0) + 1;
+                      return acc;
+                    }, {})).map(([type, count]) => (
+                      <div key={type} className="bg-red-500/20 border border-red-500/50 text-red-100 text-xs px-2 py-1 rounded-lg font-bold flex gap-1 items-center">
+                         <span>{type}: {count}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Aset Panel */}
+            {detectionMode !== 'hanya_kerusakan' && (
+              <div className="bg-surface-900/80 backdrop-blur-md rounded-xl p-3 border border-blue-500/30 shadow-xl">
+                <p className="text-[10px] text-surface-400 font-bold mb-1.5 uppercase tracking-wider">Aset Toll</p>
+                {currentFrameStats.assets.length === 0 ? (
+                  <p className="text-xs text-surface-500 flex items-center gap-1 font-semibold">Tidak ada aset</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(currentFrameStats.assets.reduce((acc, a) => {
+                      acc[a.type] = (acc[a.type] || 0) + 1;
+                      return acc;
+                    }, {})).map(([type, count]) => (
+                      <div key={type} className="bg-blue-500/20 border border-blue-500/50 text-blue-100 text-xs px-2 py-1 rounded-lg font-bold flex gap-1 items-center">
+                         <span>{ASSET_ICONS[type] || '📌'} {type}: {count}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Bottom Control Bar */}

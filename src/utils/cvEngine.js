@@ -106,7 +106,7 @@ export async function analyzeFrame(base64Image) {
 
   try {
     const response = await fetch(
-      `https://detect.roboflow.com/${ROBOFLOW_MODEL_ID}?api_key=${ROBOFLOW_API_KEY}&confidence=30&overlap=30`,
+      `https://detect.roboflow.com/${ROBOFLOW_MODEL_ID}?api_key=${ROBOFLOW_API_KEY}&confidence=65&overlap=30`,
       {
         method: 'POST',
         body: base64Image,
@@ -180,26 +180,26 @@ function simulateDetection() {
   const damages = [];
   const assets = [];
 
-  // 40% chance mendeteksi kerusakan
-  if (rand < 0.4) {
+  // 15% chance mendeteksi kerusakan (Diperkecil agar lebih akurat/tidak berisik)
+  if (rand < 0.15) {
     const types = ['Lubang', 'Retak Memanjang', 'Retak Melintang', 'Retak Buaya'];
     const sevs = ['Ringan', 'Sedang', 'Parah'];
     damages.push({
       type: types[Math.floor(Math.random() * types.length)],
       severity: sevs[Math.floor(Math.random() * sevs.length)],
-      confidence: Math.round((60 + Math.random() * 38) * 10) / 10,
+      confidence: Math.round((80 + Math.random() * 18) * 10) / 10,
       bbox: { x: 200 + Math.random() * 200, y: 200 + Math.random() * 200, width: 80, height: 60 },
       rawClass: 'simulated',
     });
   }
 
-  // 25% chance mendeteksi aset
-  if (rand > 0.75) {
+  // 10% chance mendeteksi aset
+  if (rand > 0.90) {
     const types = ['Lampu Jalan', 'Pembatas Jalan', 'Plang/Rambu', 'Guardrail', 'CCTV'];
     assets.push({
       type: types[Math.floor(Math.random() * types.length)],
       condition: 'Baik',
-      confidence: Math.round((70 + Math.random() * 28) * 10) / 10,
+      confidence: Math.round((80 + Math.random() * 18) * 10) / 10,
       bbox: { x: 100 + Math.random() * 300, y: 50 + Math.random() * 150, width: 100, height: 120 },
       rawClass: 'simulated',
     });
