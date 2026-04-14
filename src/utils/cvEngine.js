@@ -146,7 +146,7 @@ export async function analyzeFrame(base64Image) {
       const dataObj = await response.json();
       const predictions = dataObj.predictions || [];
       // Berikan pseudo-tracker_id agar code UI tidak error
-      const pseudoTracked = predictions.map((p, idx) => ({ ...p, tracker_id: \`fallback_\${idx}\` }));
+      const pseudoTracked = predictions.map((p, idx) => ({ ...p, tracker_id: `fallback_${idx}` }));
       const result = classifyPredictions(pseudoTracked);
       return { ...result, rawTracked: pseudoTracked };
     }
