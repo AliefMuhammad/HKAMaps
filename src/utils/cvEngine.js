@@ -100,8 +100,7 @@ function dataURLtoBlob(dataUrl) {
  */
 export async function analyzeFrame(base64Image) {
   if (!ROBOFLOW_API_KEY) {
-    console.warn('⚠️ Roboflow API Key belum dikonfigurasi, menggunakan mode simulasi');
-    return simulateDetection();
+    return { error: 'API Key Roboflow Belum Dikonfigurasi di Environment' };
   }
 
   try {
@@ -115,15 +114,16 @@ export async function analyzeFrame(base64Image) {
     );
 
     if (!response.ok) {
-      console.error('Roboflow API error:', response.status);
-      return simulateDetection();
+      const errText = await response.text();
+      console.error('Roboflow API error:', response.status, errText);
+      return { error: `Roboflow API Error: ${response.status} - Pastikan API Key Valid` };
     }
 
     const data = await response.json();
     return classifyPredictions(data.predictions || []);
   } catch (err) {
-    console.error('CV Engine error:', err);
-    return simulateDetection();
+    console.error('CV Engine Network error:', err);
+    return { error: `Gagal menghubungi server Roboflow: ${err.message}` };
   }
 }
 

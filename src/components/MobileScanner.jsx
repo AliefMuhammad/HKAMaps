@@ -286,6 +286,14 @@ export default function MobileScanner() {
       }
       const result = await analyzeFrame(frame.base64);
 
+      if (result.error) {
+        // Stop scan agar user baca errornya
+        setIsScanning(false);
+        setCameraError(result.error);
+        setIsAnalyzing(false);
+        return;
+      }
+
       setScanCount(prev => prev + 1);
 
       let finalDamages = result.damages;
