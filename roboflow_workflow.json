@@ -1,0 +1,57 @@
+{
+  "version": "1.0",
+  "inputs": [
+    {
+      "type": "InferenceImage",
+      "name": "image"
+    }
+  ],
+  "steps": [
+    {
+      "type": "roboflow_core/object_detection_model@v1",
+      "name": "rfdetr_model",
+      "image": "$inputs.image",
+      "model_id": "rfdetr-small",
+      "confidence": 0.40
+    },
+    {
+      "type": "roboflow_core/byte_tracker@v3",
+      "name": "byte_tracker",
+      "detections": "$steps.rfdetr_model.predictions",
+      "track_activation_threshold": 0.40,
+      "lost_track_buffer": 60,
+      "minimum_matching_iou": 0.3
+    },
+    {
+      "type": "roboflow_core/line_counter@v2",
+      "name": "line_counter",
+      "detections": "$steps.byte_tracker.predictions",
+      "image": "$inputs.image",
+      "line_y": 0.5
+    },
+    {
+      "type": "roboflow_core/bounding_box_visualization@v1",
+      "name": "bbox_viz",
+      "image": "$inputs.image",
+      "predictions": "$steps.byte_tracker.predictions"
+    },
+    {
+      "type": "roboflow_core/label_visualization@v1",
+      "name": "label_viz",
+      "image": "$steps.bbox_viz.image",
+      "predictions": "$steps.byte_tracker.predictions"
+    }
+  ],
+  "outputs": [
+    {
+      "type": "InferenceImage",
+      "name": "visualized_image",
+      "value": "$steps.label_viz.image"
+    },
+    {
+      "type": "JsonField",
+      "name": "tracked_objects",
+      "value": "$steps.byte_tracker.predictions"
+    }
+  ]
+}

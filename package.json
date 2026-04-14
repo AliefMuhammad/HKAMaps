@@ -14,6 +14,7 @@
     "@react-three/fiber": "^9.5.0",
     "@supabase/supabase-js": "^2.103.0",
     "@tailwindcss/vite": "^4.2.2",
+    "inferencejs": "^1.0.0",
     "lucide-react": "^1.8.0",
     "mapbox-gl": "^3.21.0",
     "maplibre-gl": "^5.23.0",

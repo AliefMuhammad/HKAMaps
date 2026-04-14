@@ -8,6 +8,8 @@
 const ROBOFLOW_API_KEY = import.meta.env.VITE_ROBOFLOW_API_KEY;
 const ROBOFLOW_MODEL_ID = import.meta.env.VITE_ROBOFLOW_MODEL_ID || 'road-pothole-detection-fmjio/1';
 
+
+
 // Mapping dari class label Roboflow → tipe internal kita
 const DAMAGE_CLASS_MAP = {
   'pothole': 'Lubang',
@@ -104,14 +106,22 @@ export async function analyzeFrame(base64Image) {
   }
 
   try {
-    const response = await fetch(
-      `https://detect.roboflow.com/${ROBOFLOW_MODEL_ID}?api_key=${ROBOFLOW_API_KEY}&confidence=65&overlap=30`,
-      {
-        method: 'POST',
-        body: base64Image,
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      }
-    );
+    const WORKFLOW_URL = `https://detect.roboflow.com/infer/workflows/hka-maps/highway-pipeline`;
+    const payload = {
+        api_key: ROBOFLOW_API_KEY || "x7SrAJhRbVnnDyv45CRG",
+        inputs: {
+            image: {
+                type: "base64",
+                value: base64Image
+            }
+        }
+    };
+
+    const response = await fetch(WORKFLOW_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
 
     if (!response.ok) {
       const errText = await response.text();
@@ -120,18 +130,26 @@ export async function analyzeFrame(base64Image) {
     }
 
     const data = await response.json();
-    return classifyPredictions(data.predictions || []);
+    let trackedObjects = [];
+    if (data && data.outputs && data.outputs.length > 0) {
+        trackedObjects = data.outputs[0].tracked_objects || data.outputs[0].byte_tracker || [];
+    }
+    
+    // Klasifikasikan untuk backward compatiblity dengan UI lama
+    const result = classifyPredictions(trackedObjects);
+    return { ...result, rawTracked: trackedObjects };
   } catch (err) {
     console.error('CV Engine Network error:', err);
     return { error: `Gagal menghubungi server Roboflow: ${err.message}` };
   }
 }
 
+
 /**
  * Mengklasifikasikan prediksi mentah dari Roboflow
  * menjadi kategori kerusakan vs aset
  */
-function classifyPredictions(predictions) {
+export function classifyPredictions(predictions) {
   const damages = [];
   const assets = [];
 
@@ -207,3 +225,62 @@ function simulateDetection() {
 
   return { predictions: [], damages, assets };
 }
+
+export const setupInferencePipeline = async (videoElement, sessionId, onDetection) => {
+  let isActive = true;
+
+  const processFrame = async () => {
+    if (!isActive || !videoElement || videoElement.paused || videoElement.ended) return;
+    
+    try {
+      const frameData = captureFrameAsBase64(videoElement);
+      if (frameData) {
+        // Endpoint Roboflow Workflows Hosted API
+        const WORKFLOW_URL = `https://detect.roboflow.com/infer/workflows/hka-maps/highway-pipeline`;
+        
+        const payload = {
+            api_key: ROBOFLOW_API_KEY || "x7SrAJhRbVnnDyv45CRG",
+            inputs: {
+                image: {
+                    type: "base64",
+                    value: frameData.base64
+                }
+            }
+        };
+
+        const response = await fetch(WORKFLOW_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+           const data = await response.json();
+           
+           // Cari output 'tracked_objects' berdasar JSON Workflow kita
+           if (data && data.outputs && data.outputs.length > 0) {
+              // Roboflow Workflows bisa mengembalikan berbagai key di dalam outputs[0]
+              const trackedObjects = data.outputs[0].tracked_objects || data.outputs[0].byte_tracker || [];
+              if (trackedObjects.length > 0) {
+                 // Untuk batch handler, pass deteksi ini (raw) ke hook useHighwayDetection
+                 onDetection(trackedObjects, sessionId);
+              }
+           }
+        }
+      }
+    } catch (e) {
+      console.error("Inference Pipeline Fetch Error:", e);
+    }
+    
+    // Looping menggunakan RequestAnimationFrame dengan delay sedikit (15fps) jika isActive
+    if (isActive) {
+        setTimeout(() => requestAnimationFrame(processFrame), 66);
+    }
+  };
+  
+  processFrame();
+  
+  // Return cleanup function
+  return () => { isActive = false; };
+};
+

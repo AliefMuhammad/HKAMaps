@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { analyzeFrame, captureFrameAsBase64 } from '../utils/cvEngine';
 import { supabase, isSupabaseConnected } from '../supabaseClient';
+import { useHighwayDetection } from '../hooks/useHighwayDetection';
 
 const ASSET_ICONS = {
   'Lampu Jalan': '💡',
@@ -37,6 +38,9 @@ export default function MobileScanner() {
   const [inspectorName, setInspectorName] = useState('');
   const [selectedTollRoadId, setSelectedTollRoadId] = useState('');
   const [tollRoads, setTollRoads] = useState([]);
+  const sessionIdRef = useRef(`session_${Date.now()}`);
+
+  const { detectedObjCounts, handleNewDetection } = useHighwayDetection();
 
   // GPS
   const [currentPos, setCurrentPos] = useState(null);
@@ -296,8 +300,14 @@ export default function MobileScanner() {
 
       setScanCount(prev => prev + 1);
 
+      // Trigger tracking and batch insertion to Supabase "highway_monitoring"
+      if (result.rawTracked && result.rawTracked.length > 0) {
+        handleNewDetection(result.rawTracked, sessionIdRef.current, currentPos);
+      }
+
       let finalDamages = result.damages;
       let finalAssets = result.assets;
+
       if (detectionMode === 'hanya_asset') finalDamages = [];
       if (detectionMode === 'hanya_kerusakan') finalAssets = [];
 
