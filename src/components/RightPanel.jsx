@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import {
   ChevronDown, ChevronRight, Eye, TrendingUp,
-  AlertCircle, MapPin, BarChart3, Crosshair
+  AlertCircle, MapPin, BarChart3, Crosshair, Upload
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -9,6 +9,7 @@ import {
 } from 'recharts';
 import { ROAD_SEGMENTS, DAMAGE_REPORTS, TOLL_POLYLINES } from '../data/mockData';
 import { convertLinesToNodes } from '../utils/bezierHelper';
+import { parseKMZ } from '../utils/kmzParser';
 
 const DAMAGE_COLORS = {
   'Retak Memanjang': '#3B82F6',
@@ -31,7 +32,8 @@ export default function RightPanel({
   onTollRoadClick, onSegment3DClick, onMarkerClick,
   goToDashboard,
   // Editor props
-  isEditingRoute, setIsEditingRoute, editCoordinates, setEditCoordinates, updateTollRoadGeometry
+  isEditingRoute, setIsEditingRoute, editCoordinates, setEditCoordinates, updateTollRoadGeometry,
+  onKMZUpload
 }) {
   if (viewState === '3d') {
     return (
@@ -69,17 +71,37 @@ export default function RightPanel({
       regionRoads={regionRoads}
       allRegionDamages={allRegionDamages}
       onTollRoadClick={onTollRoadClick}
+      onKMZUpload={onKMZUpload}
     />
   );
 }
 
 /* ===================== STATE 1 — DASHBOARD ===================== */
-function State1Panel({ selectedRegion, onRegionChange, regionRoads, allRegionDamages, onTollRoadClick }) {
+function State1Panel({ selectedRegion, onRegionChange, regionRoads, allRegionDamages, onTollRoadClick, onKMZUpload }) {
   const regions = ['Jakarta', 'Trans Sumatera'];
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
 
   const avgCondition = regionRoads.length
     ? (regionRoads.reduce((s, r) => s + r.condition_good_percentage, 0) / regionRoads.length).toFixed(1)
     : 0;
+
+  const handleFileUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setUploadError('');
+    try {
+      const geoJson = await parseKMZ(file);
+      onKMZUpload(geoJson);
+      event.target.value = '';
+    } catch (err) {
+      setUploadError(err.message || 'Gagal memproses file KMZ');
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -101,6 +123,22 @@ function State1Panel({ selectedRegion, onRegionChange, regionRoads, allRegionDam
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-5">
+        {/* Actions */}
+        <div className="bg-surface-50 rounded-xl p-3 border border-surface-200">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-bold text-surface-800">Import Data Google My Maps</p>
+              <p className="text-[10px] text-surface-500">Overlay .kmz/.kml ke dalam peta</p>
+            </div>
+            <label className={`flex items-center gap-2 bg-hka-red hover:bg-red-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors shadow-sm ${isUploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+              <Upload size={14} />
+              {isUploading ? 'Memproses...' : 'Import'}
+              <input type="file" accept=".kmz,.kml" className="hidden" onChange={handleFileUpload} disabled={isUploading} />
+            </label>
+          </div>
+          {uploadError && <p className="text-[10px] text-red-500 mt-2">{uploadError}</p>}
+        </div>
+
         {/* Summary Cards */}
         <div className="grid grid-cols-2 gap-3">
           <SummaryCard label="Kondisi Baik" value={`${avgCondition}%`} color="text-green-500" icon={<TrendingUp size={18} />} />

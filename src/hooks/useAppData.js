@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase, isSupabaseConnected } from '../supabaseClient';
-import { TOLL_ROADS, ROAD_SEGMENTS, DAMAGE_REPORTS } from '../data/mockData';
+import { TOLL_ROADS, ROAD_SEGMENTS, DAMAGE_REPORTS, TOLL_ASSETS } from '../data/mockData';
 
 /**
  * Custom hook: Mengambil data dari Supabase jika terkoneksi,
@@ -29,6 +29,7 @@ export function useAppData() {
         setTollRoads(TOLL_ROADS);
         setSegments(ROAD_SEGMENTS);
         setDamages(DAMAGE_REPORTS);
+        setAssets(TOLL_ASSETS || []);
         setUsingMock(true);
         setLoading(false);
         return;
@@ -74,6 +75,7 @@ export function useAppData() {
         setTollRoads(TOLL_ROADS);
         setSegments(ROAD_SEGMENTS);
         setDamages(DAMAGE_REPORTS);
+        setAssets(TOLL_ASSETS || []);
         setUsingMock(true);
       } finally {
         setLoading(false);

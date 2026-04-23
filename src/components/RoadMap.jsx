@@ -1,7 +1,7 @@
-import React, { useRef, useCallback, useState } from 'react';
+import React, { useRef, useCallback, useState, useEffect, useMemo } from 'react';
 import Map, { Source, Layer, Marker, NavigationControl, GeolocateControl } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { Layers, AlertTriangle } from 'lucide-react';
+import { Layers, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
 import { TOLL_POLYLINES } from '../data/mockData';
 import { computeBezierPath } from '../utils/bezierHelper';
 
@@ -70,27 +70,105 @@ const TOLL_LINE_GLOW_PAINT = {
   'line-blur': 4,
 };
 
-export default function RoadMap({ 
+/**
+ * Helper: Check if a point [lng, lat] is within the current map viewport bounds.
+ * Adds padding so markers near edges are still rendered.
+ */
+function isInBounds(bounds, lng, lat, padding = 0.05) {
+  if (!bounds) return true; // No bounds yet = render all
+  const sw = bounds.getSouthWest();
+  const ne = bounds.getNorthEast();
+  return (
+    lng >= sw.lng - padding &&
+    lng <= ne.lng + padding &&
+    lat >= sw.lat - padding &&
+    lat <= ne.lat + padding
+  );
+}
+
+export default function RoadMap({
   tollRoads, damages, assets = [], onMarkerClick, onTollRoadClick, viewState,
-  isEditingRoute, editCoordinates, setEditCoordinates 
+  isEditingRoute, editCoordinates, setEditCoordinates,
+  kmzData, kmzBounds
 }) {
   const mapRef = useRef(null);
   const [showLegend, setShowLegend] = useState(true);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [showAssets, setShowAssets] = useState(true);
   const [showDamages, setShowDamages] = useState(true);
+  const [showKmz, setShowKmz] = useState(true);
+
+  // ---- Viewport bounds tracking for per-city rendering ----
+  const [mapBounds, setMapBounds] = useState(null);
+  const [mapZoom, setMapZoom] = useState(6);
+
+  // ---- Legend section collapse state ----
+  const [legendSections, setLegendSections] = useState({
+    condition: false,  // collapsed by default
+    damage: true,      // open by default  
+    kmz: false,
+    assets: false,     // collapsed by default
+  });
+
+  const toggleLegendSection = useCallback((section) => {
+    setLegendSections(prev => ({ ...prev, [section]: !prev[section] }));
+  }, []);
+
+  // Update bounds when map moves
+  const handleMapMove = useCallback(() => {
+    const map = mapRef.current?.getMap?.() || mapRef.current;
+    if (map) {
+      setMapBounds(map.getBounds());
+      setMapZoom(map.getZoom());
+    }
+  }, []);
+
+  // Auto-zoom to KMZ data when imported
+  useEffect(() => {
+    if (kmzBounds && mapRef.current) {
+      const map = mapRef.current.getMap?.() || mapRef.current;
+      console.log('[RoadMap] Flying to KMZ bounds:', kmzBounds);
+      try {
+        map.fitBounds(kmzBounds, { padding: 80, duration: 1500, maxZoom: 16 });
+      } catch (err) {
+        console.error('[RoadMap] fitBounds error:', err);
+      }
+    }
+  }, [kmzBounds]);
 
   // Compute map center based on damages or default Jakarta
   const center = damages.length > 0
     ? {
-        lng: damages.reduce((s, d) => s + Number(d.lng), 0) / damages.length,
-        lat: damages.reduce((s, d) => s + Number(d.lat), 0) / damages.length,
-      }
+      lng: damages.reduce((s, d) => s + Number(d.lng), 0) / damages.length,
+      lat: damages.reduce((s, d) => s + Number(d.lat), 0) / damages.length,
+    }
     : { lng: 106.845, lat: -6.285 };
 
   const zoom = viewState === 'detail' ? 15 : 6;
   const pitch = viewState === 'detail' ? 55 : 0;
   const bearing = viewState === 'detail' ? -20 : 0;
+
+  // ---- VIEWPORT-FILTERED DATA (per-city rendering) ----
+  // Only render markers that are visible in the current viewport
+  const visibleDamages = useMemo(() => {
+    if (!mapBounds || viewState === 'detail') return damages; // In detail view, show all for the selected road
+    return damages.filter(d => isInBounds(mapBounds, Number(d.lng), Number(d.lat)));
+  }, [damages, mapBounds, viewState]);
+
+  const visibleAssets = useMemo(() => {
+    if (!mapBounds || viewState === 'detail') return assets;
+    return assets.filter(a => isInBounds(mapBounds, Number(a.lng), Number(a.lat)));
+  }, [assets, mapBounds, viewState]);
+
+  const visibleTollLabels = useMemo(() => {
+    if (!mapBounds || viewState !== 'dashboard') return tollRoads;
+    return tollRoads.filter(r => {
+      const coords = TOLL_POLYLINES[r.id];
+      if (!coords || !coords.length) return false;
+      // Check if any point of the polyline is visible
+      return coords.some(([lng, lat]) => isInBounds(mapBounds, lng, lat, 0.2));
+    });
+  }, [tollRoads, mapBounds, viewState]);
 
   // Build GeoJSON for polylines
   const polylineGeoJSON = {
@@ -115,6 +193,10 @@ export default function RoadMap({
     // Enable drag rotation for 3D
     if (map.dragRotate) map.dragRotate.enable();
     if (map.touchZoomRotate) map.touchZoomRotate.enableRotation();
+
+    // Get initial bounds
+    setMapBounds(map.getBounds());
+    setMapZoom(map.getZoom());
 
     // ---- ADD 3D BUILDINGS LAYER ----
     // MapTiler streets-v2 uses 'openmaptiles' as the vector source.
@@ -143,31 +225,31 @@ export default function RoadMap({
             source: vectorSource,
             'source-layer': 'building',
             type: 'fill-extrusion',
-          minzoom: 13,
-          paint: {
-            'fill-extrusion-color': [
-              'interpolate', ['linear'], ['get', 'render_height'],
-              0, '#e8e4de',
-              15, '#dbd6ce',
-              30, '#d4cfc7',
-              60, '#c0b9af',
-              120, '#aba49a',
-            ],
-            'fill-extrusion-height': [
-              'interpolate', ['linear'], ['zoom'],
-              13, 0,
-              14, ['get', 'render_height'],
-            ],
-            'fill-extrusion-base': [
-              'interpolate', ['linear'], ['zoom'],
-              13, 0,
-              14, ['get', 'render_min_height'],
-            ],
-            'fill-extrusion-opacity': 0.85,
+            minzoom: 13,
+            paint: {
+              'fill-extrusion-color': [
+                'interpolate', ['linear'], ['get', 'render_height'],
+                0, '#e8e4de',
+                15, '#dbd6ce',
+                30, '#d4cfc7',
+                60, '#c0b9af',
+                120, '#aba49a',
+              ],
+              'fill-extrusion-height': [
+                'interpolate', ['linear'], ['zoom'],
+                13, 0,
+                14, ['get', 'render_height'],
+              ],
+              'fill-extrusion-base': [
+                'interpolate', ['linear'], ['zoom'],
+                13, 0,
+                14, ['get', 'render_min_height'],
+              ],
+              'fill-extrusion-opacity': 0.85,
+            },
           },
-        },
-        labelLayerId  // Insert below labels so text remains readable
-      );
+          labelLayerId  // Insert below labels so text remains readable
+        );
       }
     }
   }, []);
@@ -199,8 +281,100 @@ export default function RoadMap({
         maxPitch={80}
         onLoad={onMapLoad}
         onClick={handleMapClick}
+        onMoveEnd={handleMapMove}
+        onZoomEnd={handleMapMove}
       >
         <NavigationControl position="top-right" visualizePitch />
+
+        {/* ====== KMZ IMPORTED DATA ====== */}
+        {kmzData && showKmz && (
+          <>
+            {/* Separate sources for lines and polygons to avoid filter issues */}
+            <Source
+              id="kmz-lines-source"
+              type="geojson"
+              data={{
+                type: 'FeatureCollection',
+                features: (kmzData.features || []).filter(f =>
+                  f.geometry && (f.geometry.type === 'LineString' || f.geometry.type === 'MultiLineString')
+                )
+              }}
+            >
+              {/* Main line */}
+              <Layer
+                id="kmz-lines"
+                type="line"
+                paint={{
+                  'line-color': ['get', 'stroke'],
+                  'line-width': ['get', 'stroke-width'],
+                  'line-opacity': ['get', 'stroke-opacity']
+                }}
+                layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+              />
+              {/* Glow behind lines */}
+              <Layer
+                id="kmz-lines-glow"
+                type="line"
+                beforeId="kmz-lines"
+                paint={{
+                  'line-color': ['get', 'stroke'],
+                  'line-width': ['*', ['get', 'stroke-width'], 2.5],
+                  'line-opacity': 0.2,
+                  'line-blur': 4
+                }}
+                layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+              />
+            </Source>
+
+            <Source
+              id="kmz-polygons-source"
+              type="geojson"
+              data={{
+                type: 'FeatureCollection',
+                features: (kmzData.features || []).filter(f =>
+                  f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+                )
+              }}
+            >
+              <Layer
+                id="kmz-polygons"
+                type="fill"
+                paint={{
+                  'fill-color': ['get', 'fill'],
+                  'fill-opacity': ['get', 'fill-opacity']
+                }}
+              />
+              <Layer
+                id="kmz-polygon-outlines"
+                type="line"
+                paint={{
+                  'line-color': ['get', 'stroke'],
+                  'line-width': ['get', 'stroke-width'],
+                  'line-opacity': ['get', 'stroke-opacity']
+                }}
+              />
+            </Source>
+
+            {/* KMZ Point markers — viewport-filtered */}
+            {(kmzData.features || []).filter(f =>
+              f.geometry && f.geometry.type === 'Point' &&
+              isInBounds(mapBounds, f.geometry.coordinates[0], f.geometry.coordinates[1])
+            ).map((f, i) => (
+              <Marker
+                key={`kmz-pt-${i}`}
+                longitude={f.geometry.coordinates[0]}
+                latitude={f.geometry.coordinates[1]}
+                anchor="center"
+              >
+                <div
+                  className="w-3.5 h-3.5 rounded-full border-2 border-white shadow-md"
+                  style={{ backgroundColor: f.properties.stroke || '#EB1D24' }}
+                  title={f.properties.name || 'KMZ Point'}
+                />
+              </Marker>
+            ))}
+          </>
+        )}
 
         {/* ====== TOLL ROAD POLYLINES ====== */}
         <Source id="toll-roads" type="geojson" data={polylineGeoJSON}>
@@ -269,15 +443,15 @@ export default function RoadMap({
                       });
                     }}
                   >
-                    <div 
+                    <div
                       onContextMenu={(e) => {
                         e.preventDefault();
                         setEditCoordinates(prev => prev.filter(n => n.id !== node.id));
                       }}
-                      className={`w-3.5 h-3.5 rounded-full border-[2px] border-white shadow-md cursor-grab active:cursor-grabbing hover:scale-125 transition-transform ${isSelected ? 'bg-hka-red' : 'bg-blue-500'}`} 
+                      className={`w-3.5 h-3.5 rounded-full border-[2px] border-white shadow-md cursor-grab active:cursor-grabbing hover:scale-125 transition-transform ${isSelected ? 'bg-hka-red' : 'bg-blue-500'}`}
                     />
                   </Marker>
-                  
+
                   {/* CONTROL POINTS (Only for selected node) */}
                   {isSelected && (
                     <>
@@ -338,8 +512,8 @@ export default function RoadMap({
           </>
         )}
 
-        {/* ====== DAMAGE MARKERS (Warning Triangle Style) ====== */}
-        {showDamages && damages.map(d => (
+        {/* ====== DAMAGE MARKERS — viewport-filtered (per kota) ====== */}
+        {showDamages && visibleDamages.map(d => (
           <Marker
             key={d.id}
             longitude={Number(d.lng)}
@@ -351,8 +525,8 @@ export default function RoadMap({
           </Marker>
         ))}
 
-        {/* ====== ASSET MARKERS ====== */}
-        {showAssets && assets.map(a => (
+        {/* ====== ASSET MARKERS — viewport-filtered (per kota) ====== */}
+        {showAssets && visibleAssets.map(a => (
           <Marker
             key={`asset-${a.id}`}
             longitude={Number(a.lng)}
@@ -363,8 +537,8 @@ export default function RoadMap({
           </Marker>
         ))}
 
-        {/* ====== TOLL ROAD NAME LABELS (Dashboard overview) ====== */}
-        {viewState === 'dashboard' && tollRoads.map(r => {
+        {/* ====== TOLL ROAD NAME LABELS — viewport-filtered (per kota) ====== */}
+        {viewState === 'dashboard' && visibleTollLabels.map(r => {
           const coords = TOLL_POLYLINES[r.id];
           if (!coords || !coords.length) return null;
           const mid = coords[Math.floor(coords.length / 2)];
@@ -378,44 +552,66 @@ export default function RoadMap({
         })}
       </Map>
 
-      {/* ====== LEGEND OVERLAY ====== */}
+      {/* ====== COMPACT LEGEND OVERLAY (collapsible sections) ====== */}
       {showLegend && (
-        <div className="absolute bottom-4 left-4 bg-white/95 backdrop-blur-sm rounded-xl shadow-lg p-3 text-xs space-y-2 z-10 border border-surface-200 max-h-[60vh] overflow-y-auto">
-          <div className="flex items-center justify-between mb-1">
+        <div className="absolute bottom-4 left-4 bg-white/95 backdrop-blur-sm rounded-xl shadow-lg p-3 text-xs z-10 border border-surface-200 max-w-[220px]">
+          <div className="flex items-center justify-between mb-2">
             <p className="font-semibold text-surface-600 flex items-center gap-1"><Layers size={12} /> Legend</p>
-            <button onClick={() => setShowLegend(false)} className="text-surface-300 hover:text-surface-500 cursor-pointer">✕</button>
+            <button onClick={() => setShowLegend(false)} className="text-surface-300 hover:text-surface-500 cursor-pointer text-sm">✕</button>
           </div>
-          <div className="space-y-1.5">
-            <LegendItem color="#22C55E" label="Kondisi Baik (≥90%)" />
-            <LegendItem color="#F59E0B" label="Perlu Perhatian (75-90%)" />
+
+          {/* Viewport info */}
+          <div className="text-[9px] text-surface-400 mb-2 bg-surface-50 rounded-md px-2 py-1">
+            🗺️ Menampilkan: {visibleDamages.length}/{damages.length} kerusakan, {visibleAssets.length}/{assets.length} aset
+          </div>
+
+          {/* --- Kondisi Jalan (collapsible) --- */}
+          <LegendSection
+            title="🛣️ Kondisi Jalan"
+            isOpen={legendSections.condition}
+            onToggle={() => toggleLegendSection('condition')}
+          >
+            <LegendItem color="#22C55E" label="Baik (≥90%)" />
+            <LegendItem color="#F59E0B" label="Perhatian (75-90%)" />
             <LegendItem color="#EF4444" label="Kritis (<75%)" />
-          </div>
-          <hr className="border-surface-100" />
-          <div className="flex items-center justify-between">
-            <p className="text-[10px] text-surface-400 font-semibold">⚠️ Kerusakan Jalan</p>
-            <ToggleSwitch checked={showDamages} onChange={setShowDamages} />
-          </div>
-          <div className="space-y-1">
+          </LegendSection>
+
+          {/* --- Kerusakan (collapsible + toggle) --- */}
+          <LegendSection
+            title="⚠️ Kerusakan"
+            isOpen={legendSections.damage}
+            onToggle={() => toggleLegendSection('damage')}
+            toggleSwitch={{ checked: showDamages, onChange: setShowDamages }}
+          >
             <LegendMarker color="#22C55E" label="Ringan" />
             <LegendMarker color="#F59E0B" label="Sedang" />
             <LegendMarker color="#EF4444" label="Parah" />
-          </div>
-          <hr className="border-surface-100" />
-          <div className="flex items-center justify-between">
-            <p className="text-[10px] text-surface-400 font-semibold">🏗️ Aset Tol</p>
-            <ToggleSwitch checked={showAssets} onChange={setShowAssets} />
-          </div>
-          <div className="space-y-1">
+          </LegendSection>
+
+          {/* --- KMZ Custom (collapsible + toggle) --- */}
+          {kmzData && (
+            <LegendSection
+              title="🗺️ KMZ Custom"
+              isOpen={legendSections.kmz}
+              onToggle={() => toggleLegendSection('kmz')}
+              toggleSwitch={{ checked: showKmz, onChange: setShowKmz }}
+            />
+          )}
+
+          {/* --- Aset Tol (collapsible + toggle) --- */}
+          <LegendSection
+            title="🏗️ Aset Tol"
+            isOpen={legendSections.assets}
+            onToggle={() => toggleLegendSection('assets')}
+            toggleSwitch={{ checked: showAssets, onChange: setShowAssets }}
+          >
             {Object.entries(ASSET_MARKER_ICONS).map(([type, icon]) => (
               <div key={type} className="flex items-center gap-2">
                 <span className="text-xs">{icon}</span>
-                <span className="text-surface-500">{type}</span>
+                <span className="text-surface-500 text-[10px]">{type}</span>
               </div>
             ))}
-          </div>
-          {assets.length > 0 && (
-            <p className="text-[9px] text-surface-400 pt-1">{assets.length} aset terpantau</p>
-          )}
+          </LegendSection>
         </div>
       )}
 
@@ -442,6 +638,31 @@ export default function RoadMap({
           <p><kbd className="bg-surface-200 px-1 rounded text-[9px]">Ctrl</kbd> + Drag → Rotate 3D</p>
           <p><kbd className="bg-surface-200 px-1 rounded text-[9px]">Scroll</kbd> → Zoom In/Out</p>
           <p>Right-click + Drag → Tilt</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---- COLLAPSIBLE LEGEND SECTION ---- */
+function LegendSection({ title, isOpen, onToggle, toggleSwitch, children }) {
+  return (
+    <div className="border-t border-surface-100 pt-1.5 mt-1.5">
+      <div className="flex items-center justify-between">
+        <button
+          onClick={onToggle}
+          className="flex items-center gap-1 text-[10px] font-semibold text-surface-500 hover:text-surface-700 cursor-pointer transition-colors"
+        >
+          {isOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+          {title}
+        </button>
+        {toggleSwitch && (
+          <ToggleSwitch checked={toggleSwitch.checked} onChange={toggleSwitch.onChange} />
+        )}
+      </div>
+      {isOpen && children && (
+        <div className="space-y-1 mt-1.5 ml-3 animate-in fade-in slide-in-from-top-1">
+          {children}
         </div>
       )}
     </div>
@@ -500,14 +721,12 @@ function ToggleSwitch({ checked, onChange }) {
   return (
     <button
       onClick={() => onChange(!checked)}
-      className={`w-8 h-4 rounded-full relative transition-colors cursor-pointer ${
-        checked ? 'bg-green-500' : 'bg-surface-300'
-      }`}
+      className={`w-8 h-4 rounded-full relative transition-colors cursor-pointer ${checked ? 'bg-green-500' : 'bg-surface-300'
+        }`}
     >
       <div
-        className={`w-3 h-3 rounded-full bg-white shadow absolute top-0.5 transition-transform ${
-          checked ? 'translate-x-4' : 'translate-x-0.5'
-        }`}
+        className={`w-3 h-3 rounded-full bg-white shadow absolute top-0.5 transition-transform ${checked ? 'translate-x-4' : 'translate-x-0.5'
+          }`}
       />
     </button>
   );
@@ -516,8 +735,8 @@ function ToggleSwitch({ checked, onChange }) {
 function LegendItem({ color, label }) {
   return (
     <div className="flex items-center gap-2">
-      <div className="w-5 h-1.5 rounded" style={{ backgroundColor: color }} />
-      <span className="text-surface-500">{label}</span>
+      <div className="w-4 h-1.5 rounded" style={{ backgroundColor: color }} />
+      <span className="text-surface-500 text-[10px]">{label}</span>
     </div>
   );
 }
@@ -525,10 +744,10 @@ function LegendItem({ color, label }) {
 function LegendMarker({ color, label }) {
   return (
     <div className="flex items-center gap-2">
-      <svg width="12" height="12" viewBox="0 0 24 24">
+      <svg width="10" height="10" viewBox="0 0 24 24">
         <path d="M12 2L1 21h22L12 2z" fill={color} stroke="white" strokeWidth="2" />
       </svg>
-      <span className="text-surface-500">{label}</span>
+      <span className="text-surface-500 text-[10px]">{label}</span>
     </div>
   );
 }

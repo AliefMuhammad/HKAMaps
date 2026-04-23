@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Layers, Activity, AlertTriangle, Settings, Search,
@@ -30,6 +30,16 @@ export default function App() {
   const [selectedQuarter, setSelectedQuarter] = useState('2024-Q1');
   const [modalReport, setModalReport] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // ---- custom imported layers ----
+  const [kmzData, setKmzData] = useState(null);
+  const [kmzBounds, setKmzBounds] = useState(null);
+
+  const handleKMZUpload = useCallback((result) => {
+    console.log('[App] KMZ Upload result:', result);
+    setKmzData(result.geojson);
+    setKmzBounds(result.bounds);
+  }, []);
 
   // ---- route editor state ----
   const [isEditingRoute, setIsEditingRoute] = useState(false);
@@ -140,6 +150,18 @@ export default function App() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* ---- HEADER ---- */}
         <header className="h-14 bg-white border-b border-surface-200 flex items-center px-5 gap-4 shrink-0 z-20">
+          {/* HKA Logo */}
+          <button
+            onClick={goToDashboard}
+            className="flex items-center gap-2 hover:opacity-80 transition-opacity shrink-0"
+            title="Kembali ke Dashboard"
+          >
+            <img src="/hka-logo.svg" alt="HKA Logo" className="h-10 w-auto" />
+          </button>
+
+          {/* Divider */}
+          <div className="w-px h-6 bg-surface-200"></div>
+
           {/* Breadcrumb */}
           <nav className="flex items-center gap-1 text-sm text-surface-500">
             {breadcrumbs.map((b, i) => (
@@ -193,6 +215,9 @@ export default function App() {
                 isEditingRoute={isEditingRoute}
                 editCoordinates={editCoordinates}
                 setEditCoordinates={setEditCoordinates}
+                // KMZ Imported Data
+                kmzData={kmzData}
+                kmzBounds={kmzBounds}
               />
             )}
           </div>
@@ -220,6 +245,8 @@ export default function App() {
               editCoordinates={editCoordinates}
               setEditCoordinates={setEditCoordinates}
               updateTollRoadGeometry={updateTollRoadGeometry}
+              // KMZ Upload
+              onKMZUpload={handleKMZUpload}
             />
           </div>
         </div>
