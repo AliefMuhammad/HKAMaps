@@ -1,0 +1,50 @@
+# ============================================================
+# YOLO Dataset Config — HKA MAPS Road Inspection
+# Compatible with Ultralytics YOLO11 / YOLO12
+# ============================================================
+
+# Paths (relative to this file, or absolute)
+path: ../datasets/processed     # dataset root directory
+train: images/train             # → datasets/processed/images/train/
+val:   images/val               # → datasets/processed/images/val/
+test:  images/test              # optional
+
+# ============================================================
+# Class definitions
+# Priority MVP classes first (easier to collect data for)
+# ============================================================
+nc: 15   # total number of classes
+
+names:
+  # ---- Road defects (indices 0–7) ----
+  0:  pothole
+  1:  longitudinal_crack
+  2:  transverse_crack
+  3:  alligator_crack
+  4:  hairline_crack
+  5:  patching
+  6:  rutting
+  7:  surface_depression
+
+  # ---- Toll road assets (indices 8–14) ----
+  8:  concrete_barrier
+  9:  guardrail
+  10: traffic_sign
+  11: direction_sign
+  12: street_light
+  13: gantry
+  14: cctv_pole
+
+# ============================================================
+# MVP subset config (use this for initial training)
+# Uncomment and set nc: 7 to train on MVP classes only.
+# ============================================================
+# nc: 7
+# names:
+#   0: pothole
+#   1: longitudinal_crack
+#   2: alligator_crack
+#   3: concrete_barrier
+#   4: guardrail
+#   5: traffic_sign
+#   6: street_light

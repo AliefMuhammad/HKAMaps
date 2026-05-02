@@ -1,0 +1,14 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+opencv-python-headless>=4.10.0
+numpy>=1.26.0
+ultralytics>=8.3.0
+aiofiles>=23.2.0
+huggingface_hub>=0.24.0
+Pillow>=10.0.0
+
+# Untuk zero-shot asset detection (Grounding DINO) — aktifkan dengan USE_ZERO_SHOT_ASSETS=true
+# Install terpisah karena torch cukup besar (~2GB CPU / ~5GB GPU):
+#   pip install transformers torch
+#   atau untuk CPU saja: pip install transformers torch --index-url https://download.pytorch.org/whl/cpu
