@@ -1,0 +1,14 @@
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.DS_Store
+*.mp4
+*.mov
+*.avi
+*.pt
+*.onnx
+training
+runs
+datasets
