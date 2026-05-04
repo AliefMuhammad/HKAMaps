@@ -53,10 +53,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="HKA MAPS Inference Service", version="1.0.0", lifespan=lifespan)
 
+_cors_origins = cfg.CORS_ORIGINS
+_allow_credentials = "*" not in _cors_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cfg.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -191,9 +194,11 @@ async def infer_realtime_frame(
     frame_index: int = Form(default=0),
 ):
     """
-    Lightweight endpoint for realtime camera frames.
-    Does NOT save images to disk (save_files=False) for lower latency.
-    Frontend decides whether to persist annotated frame.
+    Realtime camera frame endpoint — runs the same full pipeline as video upload.
+    - save_files=False  — no disk I/O, keeps latency low.
+    - fast_mode=False   — YOLO-World (~0.2s/frame on MPS) runs on every frame,
+                          giving the same asset coverage as the video pipeline.
+    - annotated_image_base64 is returned in-memory when detections exist.
     """
     if not _vision:
         raise HTTPException(503, "Vision service not initialised")
@@ -213,6 +218,7 @@ async def infer_realtime_frame(
         location_status=location_status,
         frame_index=frame_index,
         save_files=False,
+        fast_mode=False,  # full pipeline: HF defect model + YOLO-World assets + YOLO
     )
 
     if "error" in result:

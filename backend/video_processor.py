@@ -138,6 +138,10 @@ def _process_video_sync(job_id: str, vision: VisionService) -> None:
                 _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
                 image_bytes = buf.tobytes()
 
+                # Run zero-shot only every N sampled frames to keep video processing fast.
+                # On frames in-between, YOLO + HF defect model still run (fast).
+                use_zero_shot = (sample_num % max(1, cfg.ZERO_SHOT_EVERY_N_FRAMES) == 0)
+
                 result = vision.infer_image(
                     image_bytes=image_bytes,
                     session_id=job["session_id"],
@@ -147,6 +151,7 @@ def _process_video_sync(job_id: str, vision: VisionService) -> None:
                     frame_index=sample_num,
                     video_timestamp_second=round(video_second, 2),
                     save_files=True,
+                    fast_mode=not use_zero_shot,
                 )
 
                 # Apply detection mode filter
@@ -183,7 +188,7 @@ def _process_video_sync(job_id: str, vision: VisionService) -> None:
             frame_idx += 1
 
         job["results"] = all_results
-        job["events"] = tracker.get_events()
+        job["events"] = tracker.get_events(min_appearances=cfg.MIN_EVENT_APPEARANCES)
         job["events_count"] = len(job["events"])
         job["status"] = "completed"
         job["progress"] = 100

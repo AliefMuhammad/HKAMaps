@@ -1,22 +1,30 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Camera, MapPin, Zap, StopCircle, ChevronLeft, AlertTriangle,
+  Camera, MapPin, Zap, StopCircle, ChevronLeft, ChevronRight, AlertTriangle,
   Gauge, Clock, Upload, CheckCircle, XCircle, Loader2, Crosshair,
-  Lightbulb, ShieldAlert, Signpost, Eye
+  Lightbulb, ShieldAlert, Signpost, Eye, FileVideo,
 } from 'lucide-react';
 import { analyzeFrame, captureFrameAsBase64 } from '../utils/cvEngine';
 import { supabase, isSupabaseConnected } from '../supabaseClient';
 import { useHighwayDetection } from '../hooks/useHighwayDetection';
+import VideoInspection from './VideoInspection';
 
 const ASSET_ICONS = {
-  'Lampu Jalan': '💡',
-  'Pembatas Jalan': '🚧',
-  'Plang/Rambu': '🪧',
-  'Guardrail': '🛡️',
-  'CCTV': '📹',
-  'Gantry Tol': '🏗️',
-  'Lainnya': '📦',
+  'Lampu Jalan':      '💡',
+  'Tiang Listrik':    '⚡',
+  'Pembatas Jalan':   '🚧',
+  'Plang/Rambu':      '🪧',
+  'Rambu Arah':       '🛣️',
+  'Rambu Peringatan': '⚠️',
+  'Guardrail':        '🛡️',
+  'CCTV':             '📹',
+  'Gantry Tol':       '🏗️',
+  'Billboard':        '📢',
+  'Videotron':        '📺',
+  'Delineator':       '🔶',
+  'Marka Jalan':      '〰️',
+  'Lainnya':          '📦',
 };
 
 const SEVERITY_COLORS = {
@@ -24,6 +32,22 @@ const SEVERITY_COLORS = {
   Sedang: '#F59E0B',
   Parah: '#EF4444',
 };
+
+// ---------------------------------------------------------------------------
+// Haversine distance (metres) — client-side, mirrors backend duplicate_filter.py
+// ---------------------------------------------------------------------------
+function _haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6_371_000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2
+          + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+const REALTIME_DEDUP_WINDOW_MS  = 8_000;  // same as backend TIME_DUPLICATE_WINDOW_SECONDS
+const REALTIME_DEDUP_RADIUS_M   = 25;     // same as backend GPS_DUPLICATE_RADIUS_METERS
 
 export default function MobileScanner() {
   const navigate = useNavigate();
@@ -33,7 +57,13 @@ export default function MobileScanner() {
   const scanIntervalRef = useRef(null);
   const gpsWatchRef = useRef(null);
 
+  // Session-level dedup registry for realtime scanning.
+  // Each entry: { className, category, lat, lng, timestamp, confidence }
+  // Mirrors the backend DetectionEventTracker logic for live camera mode.
+  const sessionRegistryRef = useRef([]);
+
   // ---- State ----
+  const [scannerTab, setScannerTab] = useState('camera'); // 'camera' | 'video'
   const [phase, setPhase] = useState('setup'); // setup | scanning | results
   const [inspectorName, setInspectorName] = useState('');
   const [selectedTollRoadId, setSelectedTollRoadId] = useState('');
@@ -172,7 +202,15 @@ export default function MobileScanner() {
     return () => stopAll();
   }, [stopAll]);
 
-  // ---- Bake Detections To Blob ----
+  // ---- Convert base64 to Blob ----
+  const _b64ToBlob = (b64, mime = 'image/jpeg') => {
+    const binary = atob(b64);
+    const u8 = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) u8[i] = binary.charCodeAt(i);
+    return new Blob([u8], { type: mime });
+  };
+
+  // ---- Bake Detections To Blob (fallback when no backend annotated image) ----
   const bakeDetectionsToBlob = async (dataUrl, result, frameW, frameH) => {
     return new Promise((resolve) => {
       const img = new Image();
@@ -183,39 +221,44 @@ export default function MobileScanner() {
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, frameW, frameH);
 
+        // Damage boxes — solid, severity color, thickness 2 (matches backend style)
         result.damages.forEach(d => {
           const x = (d.bbox.x - d.bbox.width / 2);
           const y = (d.bbox.y - d.bbox.height / 2);
           const w = d.bbox.width;
           const h = d.bbox.height;
-          ctx.strokeStyle = SEVERITY_COLORS[d.severity] || '#EF4444';
-          ctx.lineWidth = 3;
+          const color = SEVERITY_COLORS[d.severity] || '#EF4444';
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.setLineDash([]);
           ctx.strokeRect(x, y, w, h);
-          ctx.fillStyle = SEVERITY_COLORS[d.severity] || '#EF4444';
-          ctx.fillRect(x, y - 22, ctx.measureText(`${d.type} ${d.confidence}%`).width + 12, 22);
+          const label = `${d.type} ${d.confidence}%`;
+          ctx.fillStyle = color;
+          ctx.fillRect(x, Math.max(0, y - 22), ctx.measureText(label).width + 10, 22);
           ctx.fillStyle = '#fff';
           ctx.font = 'bold 12px sans-serif';
-          ctx.fillText(`${d.type} ${d.confidence}%`, x + 4, y - 6);
+          ctx.fillText(label, x + 4, Math.max(18, y - 5));
         });
 
+        // Asset boxes — solid orange (matches backend BGR(0,165,255) = RGB(255,165,0))
         result.assets.forEach(a => {
           const x = (a.bbox.x - a.bbox.width / 2);
           const y = (a.bbox.y - a.bbox.height / 2);
           const w = a.bbox.width;
           const h = a.bbox.height;
-          ctx.strokeStyle = '#3B82F6';
-          ctx.lineWidth = 3;
-          ctx.setLineDash([6, 3]);
-          ctx.strokeRect(x, y, w, h);
+          ctx.strokeStyle = '#FFA500';
+          ctx.lineWidth = 2;
           ctx.setLineDash([]);
-          ctx.fillStyle = '#3B82F6';
-          ctx.fillRect(x, y - 22, ctx.measureText(`${a.type} ${a.confidence}%`).width + 12, 22);
+          ctx.strokeRect(x, y, w, h);
+          const label = `${a.type} ${a.confidence}%`;
+          ctx.fillStyle = '#FFA500';
+          ctx.fillRect(x, Math.max(0, y - 22), ctx.measureText(label).width + 10, 22);
           ctx.fillStyle = '#fff';
           ctx.font = 'bold 12px sans-serif';
-          ctx.fillText(`${a.type} ${a.confidence}%`, x + 4, y - 6);
+          ctx.fillText(label, x + 4, Math.max(18, y - 5));
         });
 
-        canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.8);
+        canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.92);
       };
       img.src = dataUrl;
     });
@@ -277,6 +320,37 @@ export default function MobileScanner() {
     }
   };
 
+  // ---- Session-level dedup for realtime camera ----
+  // Returns true if this detection is NEW (not a duplicate of a recent observation).
+  // Mirrors backend DetectionEventTracker three-tier logic.
+  const _isNewDetection = useCallback((className, category, lat, lng) => {
+    const now = Date.now();
+    const hasGps = lat != null && lng != null;
+
+    // Purge stale entries first
+    sessionRegistryRef.current = sessionRegistryRef.current.filter(
+      e => now - e.timestamp < REALTIME_DEDUP_WINDOW_MS
+    );
+
+    for (const seen of sessionRegistryRef.current) {
+      if (seen.className !== className) continue;
+
+      // GPS proximity match
+      if (hasGps && seen.lat != null && seen.lng != null) {
+        const dist = _haversineMeters(lat, lng, seen.lat, seen.lng);
+        if (dist <= REALTIME_DEDUP_RADIUS_M) return false;
+      } else if (category === 'asset') {
+        // Time-only match for assets without GPS (same as backend)
+        return false;
+      }
+    }
+    return true;
+  }, []);
+
+  const _registerDetection = useCallback((className, category, lat, lng) => {
+    sessionRegistryRef.current.push({ className, category, lat, lng, timestamp: Date.now() });
+  }, []);
+
   // ---- Capture & Analyze single frame ----
   const captureAndAnalyze = useCallback(async () => {
     if (!videoRef.current || !cameraReady || isAnalyzing) return;
@@ -315,32 +389,60 @@ export default function MobileScanner() {
       drawDetections({ damages: finalDamages, assets: finalAssets }, frame.width, frame.height);
 
       if (finalDamages.length > 0 || finalAssets.length > 0) {
-        const bakedBlob = await bakeDetectionsToBlob(
-          frame.dataUrl, 
-          { damages: finalDamages, assets: finalAssets }, 
-          frame.width, 
-          frame.height
+        const lat = currentPos?.lat ?? null;
+        const lng = currentPos?.lng ?? null;
+
+        // Deduplicate: only keep detections that are new unique observations.
+        // Same physical object seen in consecutive frames is one event, not N.
+        const newDamages = finalDamages.filter(d =>
+          _isNewDetection(d.rawClass || d.type, 'road_defect', lat, lng)
+        );
+        const newAssets = finalAssets.filter(a =>
+          _isNewDetection(a.rawClass || a.type, 'asset', lat, lng)
         );
 
-        const detection = {
-          id: `det-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          position: currentPos ? { ...currentPos } : null,
-          imageDataUrl: URL.createObjectURL(bakedBlob),
-          imageBlob: bakedBlob,
-          damages: finalDamages,
-          assets: finalAssets,
-          frameSize: { width: frame.width, height: frame.height },
-        };
+        // Register new detections into session registry
+        newDamages.forEach(d => _registerDetection(d.rawClass || d.type, 'road_defect', lat, lng));
+        newAssets.forEach(a => _registerDetection(a.rawClass || a.type, 'asset', lat, lng));
 
-        setLastDetection(detection);
-        setDetectionQueue(prev => [...prev, detection]);
+        // Always draw ALL detections on the live canvas overlay (visual feedback)
+        // but only queue the NEW unique ones for storage/reporting
+        if (newDamages.length > 0 || newAssets.length > 0) {
+          // Prefer backend annotated image (identical style to video upload)
+          let imageDataUrl, imageBlob;
+          if (result.annotatedImageBase64) {
+            imageBlob = _b64ToBlob(result.annotatedImageBase64);
+            imageDataUrl = `data:image/jpeg;base64,${result.annotatedImageBase64}`;
+          } else {
+            imageBlob = await bakeDetectionsToBlob(
+              frame.dataUrl,
+              { damages: newDamages, assets: newAssets },
+              frame.width,
+              frame.height
+            );
+            imageDataUrl = URL.createObjectURL(imageBlob);
+          }
 
-        // Auto-upload if no cooldown (3 seconds throttle per upload batch)
-        const now = Date.now();
-        if (now - lastUploadRef.current > 3000) {
-           lastUploadRef.current = now;
-           autoUploadDetection(detection);
+          const detection = {
+            id: `det-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            position: currentPos ? { ...currentPos } : null,
+            imageDataUrl,
+            imageBlob,
+            damages: newDamages,
+            assets: newAssets,
+            frameSize: { width: frame.width, height: frame.height },
+          };
+
+          setLastDetection(detection);
+          setDetectionQueue(prev => [...prev, detection]);
+
+          // Auto-upload if no cooldown (3 seconds throttle per upload batch)
+          const now = Date.now();
+          if (now - lastUploadRef.current > 3000) {
+            lastUploadRef.current = now;
+            autoUploadDetection(detection);
+          }
         }
       }
     } catch (err) {
@@ -348,7 +450,8 @@ export default function MobileScanner() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [cameraReady, isAnalyzing, currentPos, detectionMode, selectedSegmentId, selectedTollRoadId]);
+  }, [cameraReady, isAnalyzing, currentPos, detectionMode, selectedSegmentId, selectedTollRoadId,
+      _isNewDetection, _registerDetection]);
 
   // ---- Draw bounding boxes on overlay canvas ----
   const drawDetections = useCallback((result, frameW, frameH) => {
@@ -361,42 +464,45 @@ export default function MobileScanner() {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw damage boxes
+    ctx.setLineDash([]);
+
+    // Draw damage boxes — solid, severity color (matches backend style)
     result.damages.forEach(d => {
       const x = (d.bbox.x - d.bbox.width / 2) * scaleX;
       const y = (d.bbox.y - d.bbox.height / 2) * scaleY;
       const w = d.bbox.width * scaleX;
       const h = d.bbox.height * scaleY;
+      const color = SEVERITY_COLORS[d.severity] || '#EF4444';
 
-      ctx.strokeStyle = SEVERITY_COLORS[d.severity] || '#EF4444';
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
       ctx.strokeRect(x, y, w, h);
 
-      ctx.fillStyle = SEVERITY_COLORS[d.severity] || '#EF4444';
-      ctx.fillRect(x, y - 22, ctx.measureText(`${d.type} ${d.confidence}%`).width + 12, 22);
+      const label = `${d.type} ${d.confidence}%`;
+      ctx.fillStyle = color;
+      ctx.fillRect(x, Math.max(0, y - 22), ctx.measureText(label).width + 10, 22);
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 12px sans-serif';
-      ctx.fillText(`${d.type} ${d.confidence}%`, x + 4, y - 6);
+      ctx.fillText(label, x + 4, Math.max(18, y - 5));
     });
 
-    // Draw asset boxes
+    // Draw asset boxes — solid orange (matches backend BGR(0,165,255) = RGB(255,165,0))
     result.assets.forEach(a => {
       const x = (a.bbox.x - a.bbox.width / 2) * scaleX;
       const y = (a.bbox.y - a.bbox.height / 2) * scaleY;
       const w = a.bbox.width * scaleX;
       const h = a.bbox.height * scaleY;
 
-      ctx.strokeStyle = '#3B82F6';
-      ctx.lineWidth = 3;
-      ctx.setLineDash([6, 3]);
+      ctx.strokeStyle = '#FFA500';
+      ctx.lineWidth = 2;
       ctx.strokeRect(x, y, w, h);
-      ctx.setLineDash([]);
 
-      ctx.fillStyle = '#3B82F6';
-      ctx.fillRect(x, y - 22, ctx.measureText(`${a.type} ${a.confidence}%`).width + 12, 22);
+      const label = `${a.type} ${a.confidence}%`;
+      ctx.fillStyle = '#FFA500';
+      ctx.fillRect(x, Math.max(0, y - 22), ctx.measureText(label).width + 10, 22);
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 12px sans-serif';
-      ctx.fillText(`${a.type} ${a.confidence}%`, x + 4, y - 6);
+      ctx.fillText(label, x + 4, Math.max(18, y - 5));
     });
   }, []);
 
@@ -429,6 +535,7 @@ export default function MobileScanner() {
     setScanStartTime(new Date());
     setDetectionQueue([]);
     setScanCount(0);
+    sessionRegistryRef.current = [];  // reset dedup registry for new session
     setPhase('scanning');
     setIsScanning(true);
   };
@@ -568,6 +675,38 @@ export default function MobileScanner() {
           </div>
         </div>
 
+        {/* Mode Tab Selector */}
+        <div className="px-5 pt-4">
+          <div className="flex bg-surface-700/60 p-1 rounded-xl">
+            <button
+              onClick={() => setScannerTab('video')}
+              className={`flex-1 py-2.5 text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2
+                ${scannerTab === 'video' ? 'bg-hka-red text-white shadow' : 'text-surface-300 hover:text-white'}`}
+            >
+              <FileVideo size={15} /> Upload Video
+            </button>
+            <button
+              onClick={() => setScannerTab('camera')}
+              className={`flex-1 py-2.5 text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2
+                ${scannerTab === 'camera' ? 'bg-hka-red text-white shadow' : 'text-surface-300 hover:text-white'}`}
+            >
+              <Camera size={15} /> Kamera Realtime
+            </button>
+          </div>
+        </div>
+
+        {/* Video Inspection mode */}
+        {scannerTab === 'video' && (
+          <div className="flex-1 overflow-y-auto">
+            <VideoInspection
+              onBack={() => navigate('/')}
+              tollRoads={tollRoads}
+            />
+          </div>
+        )}
+
+        {/* Camera mode (existing flow) */}
+        {scannerTab === 'camera' && (
         <div className="flex-1 flex flex-col justify-center p-6 gap-6 max-w-md mx-auto w-full">
           {/* Inspector Name */}
           <div>
@@ -640,6 +779,7 @@ export default function MobileScanner() {
             <Camera size={24} /> Mulai Inspeksi
           </button>
         </div>
+        )} {/* end camera tab */}
       </div>
     );
   }
@@ -794,84 +934,66 @@ export default function MobileScanner() {
 
   // ---- RESULTS PHASE ----
   return (
-    <div className="min-h-screen bg-gradient-to-br from-surface-900 via-surface-800 to-surface-900 text-white flex flex-col">
+    <div className="flex flex-col h-screen bg-gradient-to-br from-surface-900 via-surface-800 to-surface-900 text-white">
       {/* Header */}
-      <div className="flex items-center gap-3 px-5 py-4 border-b border-white/10">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10 shrink-0">
         <button onClick={() => navigate('/')} className="p-2 hover:bg-white/10 rounded-lg transition-colors">
           <ChevronLeft size={22} />
         </button>
-        <div>
-          <h1 className="text-lg font-bold">📊 Hasil Inspeksi</h1>
+        <div className="flex-1">
+          <h1 className="text-base font-bold">Hasil Inspeksi</h1>
           <p className="text-xs text-surface-400">
-            {inspectorName || 'Petugas'} • {new Date(scanStartTime).toLocaleDateString('id-ID')}
+            {inspectorName || 'Petugas'} · {scanStartTime ? new Date(scanStartTime).toLocaleDateString('id-ID') : '-'}
           </p>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-5 space-y-5 pb-24">
-        {/* Summary Cards */}
-        <div className="grid grid-cols-3 gap-3">
-          <ResultCard label="Kerusakan" value={totalDamages} emoji="⚠️" bg="bg-red-500/10 border-red-500/30" />
-          <ResultCard label="Aset" value={totalAssets} emoji="🏗️" bg="bg-blue-500/10 border-blue-500/30" />
-          <ResultCard label="Total Scan" value={scanCount} emoji="📷" bg="bg-surface-700/50 border-surface-600" />
+      {/* Stats panel */}
+      <div className="px-4 pt-4 pb-3 border-b border-white/10 shrink-0">
+        <div className="grid grid-cols-3 gap-2 mb-2">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 text-center">
+            <div className="flex items-center justify-center gap-1 mb-0.5">
+              <AlertTriangle size={11} className="text-amber-400" />
+              <p className="text-xl font-bold">{totalDamages}</p>
+            </div>
+            <p className="text-[10px] text-surface-400">Kerusakan</p>
+          </div>
+          <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-3 text-center">
+            <p className="text-xl font-bold">{totalAssets}</p>
+            <p className="text-[10px] text-surface-400 mt-0.5">Aset</p>
+          </div>
+          <div className="bg-surface-700/40 border border-white/10 rounded-xl p-3 text-center">
+            <p className="text-xl font-bold">{scanCount}</p>
+            <p className="text-[10px] text-surface-400 mt-0.5">Total Scan</p>
+          </div>
         </div>
-
-        {/* Duration */}
-        <div className="bg-surface-700/40 rounded-xl p-4 flex items-center gap-4">
-          <Clock size={20} className="text-amber-400" />
+        <div className="bg-surface-700/40 border border-white/10 rounded-xl p-3 flex items-center gap-3">
+          <Clock size={16} className="text-amber-400 shrink-0" />
           <div>
-            <p className="text-sm font-semibold">Durasi Inspeksi</p>
-            <p className="text-xs text-surface-400">
-              {Math.floor(elapsed / 60)} menit {elapsed % 60} detik • {gpsTrack.length} titik GPS
-            </p>
+            <p className="text-sm font-semibold">{Math.floor(elapsed / 60)} menit {elapsed % 60} detik</p>
+            <p className="text-[10px] text-surface-400">{gpsTrack.length} titik GPS terekam</p>
           </div>
         </div>
+      </div>
 
-        {/* Detection List */}
-        <div>
-          <h3 className="text-xs text-surface-400 uppercase tracking-wider font-semibold mb-3">
-            Detail Deteksi ({detectionQueue.length})
-          </h3>
-          <div className="space-y-2 max-h-[40vh] overflow-y-auto">
-            {detectionQueue.map((det, idx) => (
-              <div key={det.id} className="bg-surface-700/40 rounded-xl p-3 flex items-start gap-3">
-                {det.imageDataUrl && (
-                  <img src={det.imageDataUrl} className="w-16 h-12 rounded-lg object-cover shrink-0" alt={`Detection ${idx + 1}`} />
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs text-surface-400 font-mono">
-                    #{idx + 1} • {new Date(det.timestamp).toLocaleTimeString('id-ID')}
-                  </p>
-                  {det.damages.map((d, i) => (
-                    <p key={i} className="text-sm flex items-center gap-1.5 mt-0.5">
-                      <span className="w-2 h-2 rounded-full shrink-0" style={{background: SEVERITY_COLORS[d.severity]}} />
-                      <span className="truncate">{d.type}</span>
-                      <span className="text-surface-400 text-xs">({d.severity}, {d.confidence}%)</span>
-                    </p>
-                  ))}
-                  {det.assets.map((a, i) => (
-                    <p key={i} className="text-sm flex items-center gap-1.5 mt-0.5">
-                      <span>{ASSET_ICONS[a.type]}</span>
-                      <span className="truncate">{a.type}</span>
-                      <span className="text-surface-400 text-xs">({a.confidence}%)</span>
-                    </p>
-                  ))}
-                  {det.position && (
-                    <p className="text-[10px] text-surface-500 mt-1 font-mono">
-                      📍 {det.position.lat.toFixed(5)}, {det.position.lng.toFixed(5)}
-                    </p>
-                  )}
-                </div>
-              </div>
-            ))}
-            {detectionQueue.length === 0 && (
-              <div className="text-center text-surface-500 py-8">
-                <Camera size={32} className="mx-auto mb-2 opacity-30" />
-                <p className="text-sm">Tidak ada deteksi tercatat</p>
-              </div>
-            )}
+      {/* Section label */}
+      <div className="px-4 py-2.5 shrink-0">
+        <p className="text-[10px] text-surface-400 uppercase tracking-wider font-semibold">
+          Detail Deteksi ({detectionQueue.length})
+        </p>
+      </div>
+
+      {/* Scrollable detection list */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar pb-24 divide-y divide-white/5">
+        {detectionQueue.length === 0 && (
+          <div className="flex flex-col items-center py-12 text-surface-500 gap-2">
+            <Camera size={32} className="opacity-30" />
+            <p className="text-sm">Tidak ada deteksi tercatat</p>
           </div>
-        </div>
+        )}
+        {detectionQueue.map((det, idx) => (
+          <CameraDetectionItem key={det.id} det={det} index={idx} />
+        ))}
       </div>
 
       {/* Bottom Actions */}
@@ -879,10 +1001,23 @@ export default function MobileScanner() {
         <div className="flex gap-3">
           <button
             onClick={() => navigate('/')}
-            className="flex-1 py-3 bg-gradient-to-r from-surface-700 to-surface-600 rounded-xl text-white text-sm font-bold shadow-lg"
+            className="flex-1 py-3 bg-surface-700/80 border border-white/10 rounded-xl text-white text-sm font-bold hover:bg-surface-600 transition-colors"
           >
-            Selesai & Kembali ke Dashboard
+            Selesai & Kembali
           </button>
+          {isSupabaseConnected() && (
+            <button
+              onClick={uploadToSupabase}
+              disabled={isUploading}
+              className="flex-1 py-3 bg-gradient-to-r from-hka-red to-red-600 rounded-xl text-white text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50 shadow-lg shadow-red-900/40"
+            >
+              {isUploading ? (
+                <><Loader2 size={16} className="animate-spin" /> {uploadProgress}%</>
+              ) : (
+                <><Upload size={16} /> Simpan ke Database</>
+              )}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -906,12 +1041,91 @@ function StatPill({ color, icon, label, value }) {
   );
 }
 
-function ResultCard({ label, value, emoji, bg }) {
+function CameraDetectionItem({ det, index }) {
+  const [expanded, setExpanded] = React.useState(false);
+
   return (
-    <div className={`${bg} border rounded-xl p-3 text-center`}>
-      <p className="text-2xl mb-0.5">{emoji}</p>
-      <p className="text-2xl font-bold">{value}</p>
-      <p className="text-[10px] text-surface-400">{label}</p>
+    <div
+      className={`cursor-pointer transition-colors ${expanded ? 'bg-white/[0.04]' : 'hover:bg-white/[0.02]'}`}
+      onClick={() => setExpanded(!expanded)}
+    >
+      <div className="flex items-center gap-3 px-4 py-3">
+        <div className="w-14 h-10 rounded-lg overflow-hidden bg-surface-700 shrink-0 border border-white/10">
+          {det.imageDataUrl ? (
+            <img src={det.imageDataUrl} alt={`Detection ${index + 1}`} className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-surface-500">
+              <Camera size={14} />
+            </div>
+          )}
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <p className="text-white text-sm font-semibold mb-0.5">
+            Deteksi #{index + 1}
+            <span className="text-surface-400 font-normal text-xs ml-2">
+              {new Date(det.timestamp).toLocaleTimeString('id-ID')}
+            </span>
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {det.damages.slice(0, 2).map((d, i) => (
+              <span key={i} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                d.severity === 'Parah' ? 'bg-red-500/15 border-red-500/30 text-red-300' :
+                d.severity === 'Sedang' ? 'bg-amber-500/15 border-amber-500/30 text-amber-300' :
+                'bg-green-500/15 border-green-500/30 text-green-300'
+              }`}>
+                {d.type}
+              </span>
+            ))}
+            {det.assets.slice(0, 2).map((a, i) => (
+              <span key={i} className="px-1.5 py-0.5 rounded text-[10px] font-semibold border border-blue-500/30 bg-blue-500/10 text-blue-300">
+                {ASSET_ICONS[a.type] || '📌'} {a.type}
+              </span>
+            ))}
+            {(det.damages.length + det.assets.length) > 4 && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold border border-surface-600 text-surface-400">
+                +{det.damages.length + det.assets.length - 4}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <ChevronRight size={14} className={`text-surface-500 transition-transform duration-200 shrink-0 ${expanded ? 'rotate-90' : ''}`} />
+      </div>
+
+      {expanded && (
+        <div className="px-4 pb-4">
+          {det.imageDataUrl && (
+            <img
+              src={det.imageDataUrl}
+              alt="detection detail"
+              className="w-full rounded-xl border border-white/10 bg-black/40 object-contain mb-3"
+              style={{ maxHeight: '280px' }}
+            />
+          )}
+          <div className="space-y-1.5">
+            {det.damages.map((d, i) => (
+              <p key={i} className="text-sm flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: SEVERITY_COLORS[d.severity] }} />
+                <span>{d.type}</span>
+                <span className="text-surface-400 text-xs ml-auto">{d.severity} · {d.confidence}%</span>
+              </p>
+            ))}
+            {det.assets.map((a, i) => (
+              <p key={i} className="text-sm flex items-center gap-2">
+                <span className="shrink-0">{ASSET_ICONS[a.type] || '📌'}</span>
+                <span>{a.type}</span>
+                <span className="text-surface-400 text-xs ml-auto">{a.confidence}%</span>
+              </p>
+            ))}
+          </div>
+          {det.position && (
+            <p className="text-surface-500 text-[10px] font-mono mt-2">
+              📍 {det.position.lat.toFixed(5)}, {det.position.lng.toFixed(5)}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

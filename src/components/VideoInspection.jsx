@@ -1,7 +1,7 @@
 import React, { useCallback, useRef, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle, ChevronLeft, Clock, FileVideo,
-  Loader2, MapPin, Upload, XCircle, Zap, Eye, Image,
+  AlertTriangle, CheckCircle, ChevronLeft, ChevronRight, Clock, FileVideo,
+  Lightbulb, Loader2, MapPin, Upload, XCircle, Zap, Eye, Image,
 } from 'lucide-react';
 import { processVideoUpload, checkInferenceServiceHealth } from '../utils/cvEngine';
 import { supabase, isSupabaseConnected } from '../supabaseClient';
@@ -464,23 +464,29 @@ export default function VideoInspection({ onBack, tollRoads = [] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Results sub-view
+// Results sub-view — dashboard-style layout
 // ---------------------------------------------------------------------------
 function ResultsView({ jobResult, onBack, onUpload, isUploadingDb, uploadedCount, supabaseConnected }) {
-  const [activeTab, setActiveTab] = useState('events'); // 'events' | 'frames'
-  const [expandedEvent, setExpandedEvent] = useState(null);
+  const [activeTab, setActiveTab] = useState('events');
+  const [expandedId, setExpandedId] = useState(null);
 
   const totalDefects = jobResult.events.filter(e => e.category === 'road_defect').length;
   const totalAssets  = jobResult.events.filter(e => e.category === 'asset').length;
 
+  const sevBreakdown = { Ringan: 0, Sedang: 0, Parah: 0 };
+  jobResult.events.forEach(ev => {
+    const s = SEV_EN_TO_ID[ev.severity] || ev.severity;
+    if (s in sevBreakdown) sevBreakdown[s]++;
+  });
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10">
-        <button onClick={onBack} className="p-2 hover:bg-white/10 rounded-lg">
-          <ChevronLeft size={20} />
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10 shrink-0">
+        <button onClick={onBack} className="p-2 hover:bg-white/10 rounded-lg transition-colors">
+          <ChevronLeft size={20} className="text-white" />
         </button>
-        <div>
+        <div className="flex-1">
           <h2 className="text-base font-bold text-white">Hasil Inspeksi Video</h2>
           <p className="text-xs text-surface-400">
             {jobResult.framesProcessed} frame · {jobResult.eventsCount} event deteksi
@@ -488,144 +494,120 @@ function ResultsView({ jobResult, onBack, onUpload, isUploadingDb, uploadedCount
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 pb-24">
-        {/* Summary cards */}
-        <div className="grid grid-cols-3 gap-2">
-          <SummaryCard label="Frame"     value={jobResult.framesProcessed} emoji="🎬" />
-          <SummaryCard label="Kerusakan" value={totalDefects} emoji="⚠️" highlight />
-          <SummaryCard label="Aset"      value={totalAssets}  emoji="🏗️" />
+      {/* Stats panel */}
+      <div className="px-4 pt-4 pb-3 border-b border-white/10 shrink-0">
+        <div className="grid grid-cols-3 gap-2 mb-2">
+          <div className="bg-surface-700/40 border border-white/10 rounded-xl p-3 text-center">
+            <p className="text-xl font-bold text-white">{jobResult.framesProcessed}</p>
+            <p className="text-[10px] text-surface-400 mt-0.5">Frame</p>
+          </div>
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 text-center">
+            <div className="flex items-center justify-center gap-1 mb-0.5">
+              <AlertTriangle size={11} className="text-amber-400" />
+              <p className="text-xl font-bold text-white">{totalDefects}</p>
+            </div>
+            <p className="text-[10px] text-surface-400">Kerusakan</p>
+          </div>
+          <div className="bg-surface-700/40 border border-white/10 rounded-xl p-3 text-center">
+            <p className="text-xl font-bold text-white">{totalAssets}</p>
+            <p className="text-[10px] text-surface-400 mt-0.5">Aset</p>
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-2">
-          <SummaryCard label="Total Deteksi"  value={jobResult.detectionsCount}  emoji="🔍" />
-          <SummaryCard label="Event Unik"     value={jobResult.eventsCount}       emoji="✅" />
-        </div>
-
-        {/* Tabs */}
-        <div className="flex bg-surface-700/60 p-1 rounded-xl">
-          {[
-            { key: 'events', label: 'Detection Events' },
-            { key: 'frames', label: 'Frame Hasil' },
-          ].map(t => (
-            <button
-              key={t.key}
-              onClick={() => setActiveTab(t.key)}
-              className={`flex-1 py-2 text-xs font-semibold rounded-lg transition
-                ${activeTab === t.key ? 'bg-hka-red text-white' : 'text-surface-300 hover:text-white'}`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Events tab */}
-        {activeTab === 'events' && (
-          <div className="space-y-2">
-            {jobResult.events.length === 0 && (
-              <EmptyState icon={<Eye size={28} />} label="Tidak ada deteksi" />
-            )}
-            {jobResult.events.map((ev) => (
-              <div
-                key={ev.eventId}
-                className="bg-surface-700/40 rounded-xl overflow-hidden cursor-pointer"
-                onClick={() => setExpandedEvent(expandedEvent === ev.eventId ? null : ev.eventId)}
-              >
-                <div className="flex items-start gap-3 p-3">
-                  {ev.representativeAnnotatedImageUrl && (
-                    <img
-                      src={ev.representativeAnnotatedImageUrl}
-                      alt={ev.className}
-                      className="w-16 h-12 object-cover rounded-lg shrink-0"
-                    />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-white text-sm font-semibold truncate">{ev.className}</span>
-                      <Badge className={CATEGORY_BADGE[ev.category]}>
-                        {ev.category === 'road_defect' ? 'Kerusakan' : 'Aset'}
-                      </Badge>
-                      {ev.severity && (
-                        <Badge className={SEVERITY_BADGE[ev.severity]}>
-                          {SEV_EN_TO_ID[ev.severity] || ev.severity}
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="text-surface-400 text-xs mt-1">
-                      Confidence: {Math.round((ev.bestConfidence || 0) * 100)}% ·
-                      Muncul {ev.detectionCount}× ·
-                      {formatSeconds(ev.firstSeenSecond || 0)}–{formatSeconds(ev.lastSeenSecond || 0)}
-                    </p>
-                    {ev.latitude && (
-                      <p className="text-surface-500 text-[10px] font-mono mt-0.5">
-                        📍 {ev.latitude.toFixed(5)}, {ev.longitude?.toFixed(5)} ({ev.locationStatus})
-                      </p>
-                    )}
-                  </div>
-                </div>
-                {expandedEvent === ev.eventId && ev.representativeAnnotatedImageUrl && (
-                  <img
-                    src={ev.representativeAnnotatedImageUrl}
-                    alt="annotated"
-                    className="w-full max-h-64 object-contain bg-black/40"
-                  />
-                )}
-              </div>
-            ))}
+          <div className="bg-surface-700/40 border border-white/10 rounded-xl p-3 flex items-center gap-2">
+            <Eye size={14} className="text-surface-400 shrink-0" />
+            <div>
+              <p className="text-base font-bold text-white leading-none">{jobResult.detectionsCount}</p>
+              <p className="text-[10px] text-surface-400 mt-0.5">Total Deteksi</p>
+            </div>
           </div>
-        )}
-
-        {/* Frames tab */}
-        {activeTab === 'frames' && (
-          <div className="space-y-2">
-            {jobResult.results.length === 0 && (
-              <EmptyState icon={<Image size={28} />} label="Tidak ada frame dengan deteksi" />
-            )}
-            {jobResult.results.map((r, i) => (
-              <div key={i} className="bg-surface-700/40 rounded-xl p-3 flex items-start gap-3">
-                {r.annotatedImageBase64 && (
-                  <img
-                    src={`data:image/jpeg;base64,${r.annotatedImageBase64}`}
-                    alt="frame"
-                    className="w-20 h-14 object-cover rounded-lg shrink-0"
-                  />
-                )}
-                {!r.annotatedImageBase64 && r.annotatedImageUrl && (
-                  <img src={r.annotatedImageUrl} alt="frame"
-                    className="w-20 h-14 object-cover rounded-lg shrink-0" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-surface-400 text-xs font-mono">
-                    Frame #{r.frameIndex} · {formatSeconds(r.videoTimestampSecond || 0)}
-                  </p>
-                  {r.damages?.map((d, di) => (
-                    <p key={di} className="text-sm text-white mt-0.5">
-                      <span className="text-red-400">●</span> {d.type}
-                      <span className="text-surface-400 text-xs ml-1">({d.severity}, {d.confidence}%)</span>
-                    </p>
-                  ))}
-                  {r.assets?.map((a, ai) => (
-                    <p key={ai} className="text-sm text-white mt-0.5">
-                      <span className="text-blue-400">●</span> {a.type}
-                      <span className="text-surface-400 text-xs ml-1">({a.confidence}%)</span>
-                    </p>
-                  ))}
-                </div>
+          <div className="bg-surface-700/40 border border-white/10 rounded-xl p-3 flex items-center gap-2">
+            <CheckCircle size={14} className="text-green-400 shrink-0" />
+            <div>
+              <p className="text-base font-bold text-white leading-none">{jobResult.eventsCount}</p>
+              <p className="text-[10px] text-surface-400 mt-0.5">Event Unik</p>
+            </div>
+          </div>
+        </div>
+        {totalDefects > 0 && (
+          <div className="flex gap-2 mt-3 flex-wrap">
+            {Object.entries(sevBreakdown).map(([sev, count]) => count > 0 && (
+              <div key={sev} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${SEVERITY_BADGE[sev]}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${sev === 'Ringan' ? 'bg-green-400' : sev === 'Sedang' ? 'bg-amber-400' : 'bg-red-400'}`} />
+                {sev}: {count}
               </div>
             ))}
           </div>
         )}
       </div>
 
-      {/* Footer actions */}
+      {/* Tabs */}
+      <div className="flex shrink-0 border-b border-white/10">
+        {[
+          { key: 'events', label: 'Detection Events' },
+          { key: 'frames', label: 'Frame Hasil' },
+        ].map(t => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTab(t.key)}
+            className={`flex-1 py-3 text-xs font-semibold transition-all border-b-2 ${
+              activeTab === t.key
+                ? 'border-hka-red text-white'
+                : 'border-transparent text-surface-400 hover:text-white'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Scrollable list */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar pb-24 divide-y divide-white/5">
+        {activeTab === 'events' && (
+          <>
+            {jobResult.events.length === 0 && (
+              <EmptyState icon={<Eye size={28} />} label="Tidak ada deteksi" />
+            )}
+            {jobResult.events.map((ev, idx) => {
+              const id = ev.eventId || idx;
+              return (
+                <EventItem
+                  key={id}
+                  ev={ev}
+                  isExpanded={expandedId === id}
+                  onToggle={() => setExpandedId(expandedId === id ? null : id)}
+                />
+              );
+            })}
+          </>
+        )}
+
+        {activeTab === 'frames' && (
+          <>
+            {jobResult.results.length === 0 && (
+              <EmptyState icon={<Image size={28} />} label="Tidak ada frame dengan deteksi" />
+            )}
+            {jobResult.results.map((r, i) => (
+              <FrameItem key={i} r={r} />
+            ))}
+          </>
+        )}
+      </div>
+
+      {/* Footer */}
       <div className="fixed bottom-0 left-0 right-0 bg-surface-900/95 backdrop-blur-sm border-t border-white/10 p-4">
         <div className="flex gap-3 max-w-lg mx-auto">
-          <button onClick={onBack} className="flex-1 py-3 bg-surface-700 rounded-xl text-white text-sm font-semibold">
+          <button
+            onClick={onBack}
+            className="flex-1 py-3 bg-surface-700/80 border border-white/10 rounded-xl text-white text-sm font-semibold hover:bg-surface-600 transition-colors"
+          >
             Inspeksi Baru
           </button>
           {supabaseConnected && (
             <button
               onClick={onUpload}
               disabled={isUploadingDb}
-              className="flex-1 py-3 bg-gradient-to-r from-hka-red to-red-600 rounded-xl text-white text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+              className="flex-1 py-3 bg-gradient-to-r from-hka-red to-red-600 rounded-xl text-white text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50 shadow-lg shadow-red-900/40"
             >
               {isUploadingDb ? (
                 <><Loader2 size={16} className="animate-spin" /> {uploadedCount} / {jobResult.eventsCount}</>
@@ -640,17 +622,146 @@ function ResultsView({ jobResult, onBack, onUpload, isUploadingDb, uploadedCount
   );
 }
 
-// ---------------------------------------------------------------------------
-// Small sub-components
-// ---------------------------------------------------------------------------
-function SummaryCard({ label, value, emoji, highlight }) {
+// Detection event row with click-to-expand annotated image
+function EventItem({ ev, isExpanded, onToggle }) {
+  const severityId = SEV_EN_TO_ID[ev.severity] || ev.severity;
+  const confPct = Math.round((ev.bestConfidence || 0) * 100);
+  const isDefect = ev.category === 'road_defect';
+  const confBarColor = isDefect
+    ? (severityId === 'Parah' ? 'bg-red-500' : severityId === 'Sedang' ? 'bg-amber-500' : 'bg-green-500')
+    : 'bg-blue-500';
+
   return (
-    <div className={`rounded-xl p-3 text-center border ${
-      highlight ? 'bg-red-500/10 border-red-500/30' : 'bg-surface-700/40 border-surface-600/30'
-    }`}>
-      <p className="text-xl mb-0.5">{emoji}</p>
-      <p className="text-xl font-bold text-white">{value}</p>
-      <p className="text-[10px] text-surface-400">{label}</p>
+    <div
+      className={`cursor-pointer transition-colors ${isExpanded ? 'bg-white/[0.04]' : 'hover:bg-white/[0.02]'}`}
+      onClick={onToggle}
+    >
+      <div className="flex items-center gap-3 px-4 py-3">
+        <div className="w-14 h-10 rounded-lg overflow-hidden bg-surface-700 shrink-0 border border-white/10">
+          {ev.representativeAnnotatedImageUrl ? (
+            <img src={ev.representativeAnnotatedImageUrl} alt={ev.className} className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-surface-500">
+              {isDefect ? <AlertTriangle size={14} /> : <Lightbulb size={14} />}
+            </div>
+          )}
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
+            <span className="text-white text-sm font-semibold truncate">{ev.className}</span>
+            <Badge className={CATEGORY_BADGE[ev.category]}>
+              {isDefect ? 'Kerusakan' : 'Aset'}
+            </Badge>
+          </div>
+          <p className="text-surface-400 text-xs">
+            Confidence: {confPct}% · Muncul {ev.detectionCount}× · {formatSeconds(ev.firstSeenSecond || 0)}–{formatSeconds(ev.lastSeenSecond || 0)}
+          </p>
+          <div className="mt-1.5 h-1 bg-surface-600/60 rounded-full overflow-hidden w-28">
+            <div className={`h-full rounded-full ${confBarColor}`} style={{ width: `${confPct}%` }} />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          {ev.severity && (
+            <Badge className={SEVERITY_BADGE[ev.severity]}>{severityId}</Badge>
+          )}
+          <ChevronRight size={14} className={`text-surface-500 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
+        </div>
+      </div>
+
+      {isExpanded && (
+        <div className="px-4 pb-4">
+          {ev.representativeAnnotatedImageUrl && (
+            <img
+              src={ev.representativeAnnotatedImageUrl}
+              alt="annotated detail"
+              className="w-full rounded-xl border border-white/10 bg-black/40 object-contain"
+              style={{ maxHeight: '280px' }}
+            />
+          )}
+          <div className="flex flex-wrap gap-2 mt-2">
+            {ev.severity && (
+              <span className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border ${SEVERITY_BADGE[ev.severity]}`}>
+                Tingkat: {severityId}
+              </span>
+            )}
+            <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold border border-surface-600 text-surface-300 bg-surface-700/40">
+              {confPct}% confidence
+            </span>
+            {ev.detectionCount > 1 && (
+              <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold border border-surface-600 text-surface-300 bg-surface-700/40">
+                {ev.detectionCount}× deteksi
+              </span>
+            )}
+          </div>
+          {ev.latitude && (
+            <p className="text-surface-500 text-[10px] font-mono mt-2">
+              📍 {ev.latitude.toFixed(5)}, {ev.longitude?.toFixed(5)}
+              <span className="ml-1.5 text-surface-600">({ev.locationStatus})</span>
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Frame result row with click-to-expand
+function FrameItem({ r }) {
+  const [expanded, setExpanded] = useState(false);
+  const imgSrc = r.annotatedImageBase64
+    ? `data:image/jpeg;base64,${r.annotatedImageBase64}`
+    : r.annotatedImageUrl;
+
+  return (
+    <div
+      className={`cursor-pointer transition-colors ${expanded ? 'bg-white/[0.04]' : 'hover:bg-white/[0.02]'}`}
+      onClick={() => setExpanded(!expanded)}
+    >
+      <div className="flex items-center gap-3 px-4 py-3">
+        <div className="w-16 h-11 rounded-lg overflow-hidden bg-surface-700 shrink-0 border border-white/10">
+          {imgSrc ? (
+            <img src={imgSrc} alt={`frame ${r.frameIndex}`} className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-surface-500">
+              <Image size={14} />
+            </div>
+          )}
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <p className="text-white text-sm font-semibold mb-1">
+            Frame #{r.frameIndex}
+            <span className="text-surface-400 font-normal text-xs ml-2">{formatSeconds(r.videoTimestampSecond || 0)}</span>
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {r.damages?.map((d, di) => (
+              <span key={di} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${SEVERITY_BADGE[d.severity] || SEVERITY_BADGE.Sedang}`}>
+                {d.type}
+              </span>
+            ))}
+            {r.assets?.map((a, ai) => (
+              <span key={ai} className="px-1.5 py-0.5 rounded text-[10px] font-semibold border border-blue-500/30 bg-blue-500/10 text-blue-300">
+                {a.type}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <ChevronRight size={14} className={`text-surface-500 transition-transform duration-200 shrink-0 ${expanded ? 'rotate-90' : ''}`} />
+      </div>
+
+      {expanded && imgSrc && (
+        <div className="px-4 pb-4">
+          <img
+            src={imgSrc}
+            alt="frame detail"
+            className="w-full rounded-xl border border-white/10 bg-black/40 object-contain"
+            style={{ maxHeight: '280px' }}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -683,15 +794,30 @@ function _classToLegacyDmgType(className) {
 
 function _classToLegacyAssetType(className) {
   const MAP = {
-    street_light:     'Lampu Jalan',
-    concrete_barrier: 'Pembatas Jalan',
-    guardrail:        'Guardrail',
-    traffic_sign:     'Plang/Rambu',
-    direction_sign:   'Plang/Rambu',
-    cctv_pole:        'CCTV',
-    gantry:           'Gantry Tol',
-    delineator:       'Lainnya',
-    road_marking:     'Lainnya',
+    street_light:        'Lampu Jalan',
+    lamp_post:           'Lampu Jalan',
+    light_pole:          'Lampu Jalan',
+    street_lamp:         'Lampu Jalan',
+    concrete_barrier:    'Pembatas Jalan',
+    jersey_barrier:      'Pembatas Jalan',
+    guardrail:           'Guardrail',
+    traffic_sign:        'Plang/Rambu',
+    direction_sign:      'Rambu Arah',
+    highway_sign:        'Rambu Arah',
+    overhead_sign:       'Rambu Arah',
+    billboard:           'Billboard',
+    advertisement_board: 'Billboard',
+    videotron:           'Videotron',
+    led_display:         'Videotron',
+    digital_sign:        'Videotron',
+    cctv_pole:           'CCTV',
+    surveillance_camera: 'CCTV',
+    gantry:              'Gantry Tol',
+    overhead_gantry:     'Gantry Tol',
+    sign_bridge:         'Gantry Tol',
+    delineator:          'Delineator',
+    road_stud:           'Delineator',
+    road_marking:        'Marka Jalan',
   };
   return MAP[className] || 'Lainnya';
 }

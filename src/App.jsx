@@ -2,8 +2,10 @@ import React, { useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Layers, Activity, AlertTriangle, Settings, Search,
-  ChevronRight, Map as MapIcon, Box, Home, Database, Loader2, Camera
+  ChevronRight, Map as MapIcon, Box, Home, Database, Loader2, Camera, LogOut
 } from 'lucide-react';
+
+import { useAuth } from './context/AuthContext';
 
 import { useAppData } from './hooks/useAppData';
 import RoadMap from './components/RoadMap';
@@ -19,8 +21,9 @@ import DamageModal from './components/DamageModal';
 */
 
 export default function App() {
+  const { user, logout } = useAuth();
   // ---- data from Supabase or mock ----
-  const { tollRoads, segments, damages, assets, loading, error, usingMock, updateTollRoadGeometry } = useAppData();
+  const { tollRoads, segments, damages, assets, loading, error, usingMock, updateTollRoadGeometry, refetch } = useAppData();
   const navigate = useNavigate();
 
   const [viewState, setViewState] = useState('dashboard');       // dashboard | detail | 3d
@@ -61,11 +64,19 @@ export default function App() {
       if (selectedSegment) return damages.filter(d => d.segment_id === selectedSegment.id);
       if (selectedTollRoad) {
         const segIds = new Set(tollSegments.map(s => s.id));
-        return damages.filter(d => segIds.has(d.segment_id));
+        // Sertakan juga damage dari AI scanner yang memiliki toll_road_id sama
+        return damages.filter(d =>
+          segIds.has(d.segment_id) ||
+          (d.source === 'ai_scanner' && d.segment_id && segIds.has(d.segment_id))
+        );
       }
+      // Di dashboard: tampilkan damage dari region yang dipilih PLUS semua data AI scanner
       const roadIds = new Set(regionRoads.map(r => r.id));
       const segIds = new Set(segments.filter(s => roadIds.has(s.toll_road_id)).map(s => s.id));
-      return damages.filter(d => segIds.has(d.segment_id));
+      return damages.filter(d =>
+        segIds.has(d.segment_id) ||      // data manual via segment
+        d.source === 'ai_scanner'        // SEMUA data dari AI scanner (GPS-tagged)
+      );
     },
     [selectedSegment, selectedTollRoad, tollSegments, regionRoads, damages, segments]
   );
@@ -73,8 +84,29 @@ export default function App() {
   const allRegionDamages = useMemo(() => {
     const roadIds = new Set(regionRoads.map(r => r.id));
     const segIds = new Set(segments.filter(s => roadIds.has(s.toll_road_id)).map(s => s.id));
-    return damages.filter(d => segIds.has(d.segment_id));
+    return damages.filter(d =>
+      segIds.has(d.segment_id) ||
+      d.source === 'ai_scanner'   // AI scanner selalu ditampilkan
+    );
   }, [regionRoads, segments, damages]);
+
+  // Assets filtered to the selected toll road (for detail/3D views)
+  const tollRoadAssets = useMemo(() => {
+    if (selectedTollRoad) {
+      return assets.filter(a =>
+        a.toll_road_id === selectedTollRoad.id ||
+        !a.toll_road_id  // aset tanpa toll_road_id (dari scanner tanpa pilihan ruas)
+      );
+    }
+    if (viewState === 'dashboard') {
+      const roadIds = new Set(regionRoads.map(r => r.id));
+      return assets.filter(a =>
+        roadIds.has(a.toll_road_id) ||
+        !a.toll_road_id  // aset dari scanner tanpa toll_road_id → tampilkan di semua region
+      );
+    }
+    return assets;
+  }, [selectedTollRoad, assets, viewState, regionRoads]);
 
   // ---- loading state ----
   if (loading) {
@@ -124,6 +156,15 @@ export default function App() {
         }`}>
         <Database size={10} />
         {usingMock ? 'Mock Data' : 'Supabase Live'}
+        {!usingMock && (
+          <button
+            onClick={refetch}
+            title="Refresh data dari Supabase"
+            className="ml-1 hover:opacity-70 transition-opacity cursor-pointer"
+          >
+            🔄
+          </button>
+        )}
       </div>
 
       {/* ===== LEFT SIDEBAR ===== */}
@@ -141,8 +182,16 @@ export default function App() {
           <SidebarBtn icon={<Camera size={20} />} onClick={() => navigate('/scan')} tooltip="AI Scanner" />
         </nav>
 
-        <div className="mt-auto">
+        <div className="mt-auto flex flex-col gap-5">
+          {user && (
+            <div className="flex justify-center" title={`Logged in as ${user.name || user.email}`}>
+              <div className="w-8 h-8 rounded-full bg-surface-700 flex items-center justify-center text-[10px] font-bold text-white shadow-inner uppercase">
+                {user.role?.substring(0, 2) || 'US'}
+              </div>
+            </div>
+          )}
           <SidebarBtn icon={<Settings size={20} />} onClick={() => { }} tooltip="Settings" />
+          <SidebarBtn icon={<LogOut size={20} />} onClick={logout} tooltip="Logout" />
         </div>
       </aside>
 
@@ -199,6 +248,7 @@ export default function App() {
               <Road3DView
                 segment={selectedSegment}
                 damages={segmentDamages}
+                assets={tollRoadAssets}
                 selectedQuarter={selectedQuarter}
                 onQuarterChange={setSelectedQuarter}
                 onMarkerClick={setModalReport}
@@ -207,7 +257,7 @@ export default function App() {
               <RoadMap
                 tollRoads={viewState === 'dashboard' ? regionRoads : (selectedTollRoad ? [selectedTollRoad] : [])}
                 damages={segmentDamages}
-                assets={assets}
+                assets={tollRoadAssets}
                 onMarkerClick={setModalReport}
                 onTollRoadClick={goToDetail}
                 viewState={viewState}

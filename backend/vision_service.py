@@ -1,14 +1,12 @@
 """
-Vision Service — multi-source YOLO inference for road inspection.
+Vision Service — multi-source YOLO + zero-shot inference for road inspection.
 
 Model loading priority (first available wins):
   1. Custom fine-tuned weights (MODEL_ASSET_PATH / MODEL_DEFECT_PATH / MODEL_COMBINED_PATH)
-  2. HuggingFace pre-trained road damage model  (USE_HF_DEFECT_MODEL=true)  ← recommended for MVP
-  3. Grounding DINO zero-shot for assets         (USE_ZERO_SHOT_ASSETS=true) ← recommended for MVP
-  4. COCO pretrained YOLO11n fallback            (auto-download)
-  5. Simulation mode                             (if ultralytics not installed)
-
-No manual labeling needed for options 2 & 3.
+  2. HuggingFace pre-trained road damage model  (USE_HF_DEFECT_MODEL=true)
+  3. Grounding DINO zero-shot for assets         (USE_ZERO_SHOT_ASSETS=true)
+  4. COCO pretrained YOLO11n fallback
+  5. Simulation mode
 """
 import base64
 import logging
@@ -36,41 +34,46 @@ ROAD_DEFECT_CLASSES = {
 }
 
 ASSET_CLASSES = {
-    "concrete_barrier", "guardrail", "traffic_sign", "direction_sign",
-    "street_light", "road_marking", "gantry", "cctv_pole", "delineator",
-    "barrier", "sign", "streetlight", "lamp", "cctv", "camera",
+    # barriers & guardrails
+    "concrete_barrier", "guardrail", "barrier",
+    # signs (all types)
+    "traffic_sign", "direction_sign", "highway_sign", "overhead_sign", "warning_sign",
+    # lighting & poles
+    "street_light", "utility_pole",
+    # screens & billboards
+    "billboard", "videotron",
+    # infrastructure
+    "road_marking", "gantry", "cctv_pole", "delineator",
+    # legacy aliases
+    "sign", "streetlight", "lamp", "cctv", "camera",
     "toll_gantry", "street-light",
 }
 
-# RDD2022 class codes → canonical internal name
-# rezzzq/yolo12s-road-damage-rdd2022 classes: D00, D10, D20, D40, Repair
 RDD_CLASS_MAP = {
-    "D00":    "longitudinal_crack",   # Retak Memanjang
-    "D01":    "transverse_crack",     # Retak Melintang
-    "D10":    "alligator_crack",      # Retak Buaya
+    "D00":    "longitudinal_crack",
+    "D01":    "transverse_crack",
+    "D10":    "alligator_crack",
     "D11":    "pothole",
-    "D20":    "pothole",              # Lubang
-    "D40":    "longitudinal_crack",   # Retak Memanjang (blok)
+    "D20":    "pothole",
+    "D40":    "longitudinal_crack",
     "D43":    "transverse_crack",
     "D44":    "pothole",
-    "Repair": "patching",             # Tambalan (kelas baru dari model rezzzq)
+    "Repair": "patching",
     "repair": "patching",
 }
 
-# COCO classes that map to toll road assets (partial coverage without custom model)
 COCO_ASSET_MAP = {
     "traffic light": ("traffic_sign", "asset"),
     "stop sign":     ("traffic_sign", "asset"),
 }
 
-# BGR colours for bounding box drawing
+# BGR colours for bounding-box drawing
 BBOX_COLOR = {
-    "road_defect": (0, 60, 220),
-    "asset":       (0, 165, 255),
+    "road_defect": (0,  60, 220),   # orange-red
+    "asset":       (0, 165, 255),   # orange
     "unknown":     (120, 120, 120),
 }
 
-# Severity scoring thresholds (pixel area at ~640px wide frame)
 SEVERITY_AREA = {
     "pothole":            {"low": 4_000,  "high": 18_000},
     "alligator_crack":    {"low": 6_000,  "high": 22_000},
@@ -80,17 +83,71 @@ SEVERITY_AREA = {
     "_default":           {"low": 3_500,  "high": 14_000},
 }
 
-# Zero-shot label text → canonical class name + category
+# ---------------------------------------------------------------------------
+# Zero-shot label → canonical class
+# ---------------------------------------------------------------------------
 ZERO_SHOT_LABEL_MAP = {
-    "guardrail":       ("guardrail",        "asset"),
-    "concrete barrier":("concrete_barrier", "asset"),
-    "traffic sign":    ("traffic_sign",     "asset"),
-    "direction sign":  ("direction_sign",   "asset"),
-    "street light":    ("street_light",     "asset"),
-    "toll gantry":     ("gantry",           "asset"),
-    "cctv camera":     ("cctv_pole",        "asset"),
-    "delineator":      ("delineator",       "asset"),
-    "road marking":    ("road_marking",     "asset"),
+    # Guardrails & barriers
+    "guardrail":              ("guardrail",        "asset"),
+    "concrete barrier":       ("concrete_barrier", "asset"),
+    "jersey barrier":         ("concrete_barrier", "asset"),
+
+    # Traffic signs (general)
+    "traffic sign":           ("traffic_sign",     "asset"),
+    "road sign":              ("traffic_sign",     "asset"),
+
+    # Highway direction / overhead signs (green, blue, etc.)
+    "direction sign":         ("direction_sign",   "asset"),
+    "highway sign":           ("direction_sign",   "asset"),
+    "overhead road sign":     ("direction_sign",   "asset"),
+    "green road sign":        ("direction_sign",   "asset"),
+    "blue road sign":         ("direction_sign",   "asset"),
+    "overhead gantry":        ("gantry",           "asset"),
+    "sign bridge":            ("gantry",           "asset"),
+    "toll gantry":            ("gantry",           "asset"),
+
+    # Street lighting (has a luminaire/lamp head)
+    "street light":           ("street_light",     "asset"),
+    "lamp post":              ("street_light",     "asset"),
+    "light pole":             ("street_light",     "asset"),
+    "street lamp":            ("street_light",     "asset"),
+
+    # Utility / electricity poles (bare pole, no lamp, carries power/telecom wires)
+    "utility pole":           ("utility_pole",     "asset"),
+    "power pole":             ("utility_pole",     "asset"),
+    "electricity pole":       ("utility_pole",     "asset"),
+    "electric pole":          ("utility_pole",     "asset"),
+    "telephone pole":         ("utility_pole",     "asset"),
+
+    # Utility / power / electricity poles (bare pole, no lamp)
+    "power line pole":        ("utility_pole",     "asset"),
+
+    # Warning / hazard signs (yellow chevron, caution boards)
+    "chevron board":          ("warning_sign",     "asset"),
+    "road chevron":           ("warning_sign",     "asset"),
+    "road marker board":      ("warning_sign",     "asset"),
+    "warning sign":           ("warning_sign",     "asset"),
+    "chevron sign":           ("warning_sign",     "asset"),
+    "road warning sign":      ("warning_sign",     "asset"),
+    "hazard sign":            ("warning_sign",     "asset"),
+    "yellow sign":            ("warning_sign",     "asset"),
+
+    # Billboards & digital screens
+    "billboard":              ("billboard",        "asset"),
+    "advertisement board":    ("billboard",        "asset"),
+    "digital billboard":      ("videotron",        "asset"),
+    "LED display":            ("videotron",        "asset"),
+    "videotron":              ("videotron",        "asset"),
+    "digital sign":           ("videotron",        "asset"),
+
+    # Surveillance
+    "cctv camera":            ("cctv_pole",        "asset"),
+    "surveillance camera":    ("cctv_pole",        "asset"),
+
+    # Road furniture
+    "delineator":             ("delineator",       "asset"),
+    "road marking":           ("road_marking",     "asset"),
+    "road stud":              ("delineator",       "asset"),
 }
 
 
@@ -100,33 +157,67 @@ ZERO_SHOT_LABEL_MAP = {
 
 def _normalise_class(raw: str) -> tuple[str, str]:
     """Return (canonical_class_name, category)."""
-    # RDD2022 codes
     if raw in RDD_CLASS_MAP:
         return RDD_CLASS_MAP[raw], "road_defect"
 
     n = raw.lower().replace("-", "_").replace(" ", "_")
 
     # Road defects
-    if "pothole" in n:                       return "pothole", "road_defect"
-    if "alligator" in n:                     return "alligator_crack", "road_defect"
-    if "longitudinal" in n:                  return "longitudinal_crack", "road_defect"
-    if "transverse" in n:                    return "transverse_crack", "road_defect"
-    if "hairline" in n:                      return "hairline_crack", "road_defect"
-    if "patching" in n or "patch" in n:      return "patching", "road_defect"
-    if "rutting" in n or "rut" in n:         return "rutting", "road_defect"
-    if "depression" in n:                    return "surface_depression", "road_defect"
-    if "crack" in n:                         return "longitudinal_crack", "road_defect"
+    if "pothole" in n:                          return "pothole",             "road_defect"
+    if "alligator" in n:                        return "alligator_crack",     "road_defect"
+    if "longitudinal" in n:                     return "longitudinal_crack",  "road_defect"
+    if "transverse" in n:                       return "transverse_crack",    "road_defect"
+    if "hairline" in n:                         return "hairline_crack",      "road_defect"
+    if "patching" in n or "patch" in n:         return "patching",            "road_defect"
+    if "rutting" in n or "rut" in n:            return "rutting",             "road_defect"
+    if "depression" in n:                       return "surface_depression",  "road_defect"
+    if "crack" in n:                            return "longitudinal_crack",  "road_defect"
 
-    # Assets
+    # Signs — specific types first
+    if "highway_sign" in n or "overhead_sign" in n or "overhead_road" in n:
+        return "direction_sign", "asset"
+    if "direction_sign" in n or "direction" in n:
+        return "direction_sign", "asset"
+    if "highway" in n and "sign" in n:
+        return "direction_sign", "asset"
+    if "green_road" in n or "blue_road" in n:
+        return "direction_sign", "asset"
+
+    # Generic signs
+    if "traffic_sign" in n or "road_sign" in n: return "traffic_sign",    "asset"
+    if "sign_bridge" in n:                       return "gantry",          "asset"
+
+    # Lighting — must have lamp/light/luminaire in the name
     if "street_light" in n or "streetlight" in n or n == "lamp":
         return "street_light", "asset"
-    if "guardrail" in n:  return "guardrail", "asset"
-    if "barrier" in n:    return "concrete_barrier", "asset"
-    if "sign" in n:       return "traffic_sign", "asset"
-    if "cctv" in n or "camera" in n:  return "cctv_pole", "asset"
-    if "gantry" in n:     return "gantry", "asset"
-    if "delineator" in n: return "delineator", "asset"
-    if "marking" in n:    return "road_marking", "asset"
+    if "lamp_post" in n or "light_pole" in n or "street_lamp" in n:
+        return "street_light", "asset"
+
+    # Utility / power / electricity poles (bare pole, no lamp)
+    if "utility_pole" in n or "power_pole" in n or "power_line_pole" in n:
+        return "utility_pole", "asset"
+    if "electricity_pole" in n or "electric_pole" in n or "telephone_pole" in n:
+        return "utility_pole", "asset"
+
+    # Warning / caution signs (yellow chevron, hazard boards)
+    if "warning_sign" in n or "warning" in n or "chevron" in n or "hazard_sign" in n:
+        return "warning_sign", "asset"
+
+    # Barriers
+    if "guardrail" in n:                return "guardrail",        "asset"
+    if "barrier" in n or "jersey" in n: return "concrete_barrier", "asset"
+
+    # Screens / billboards
+    if "billboard" in n or "advertisement" in n: return "billboard",  "asset"
+    if "videotron" in n or "led_display" in n or "digital_billboard" in n or "digital_sign" in n:
+        return "videotron", "asset"
+
+    # Other infrastructure
+    if "cctv" in n or "camera" in n or "surveillance" in n: return "cctv_pole",    "asset"
+    if "gantry" in n or "toll_gantry" in n:                 return "gantry",       "asset"
+    if "delineator" in n or "road_stud" in n:               return "delineator",   "asset"
+    if "marking" in n:                                       return "road_marking", "asset"
+    if "sign" in n:                                          return "traffic_sign", "asset"
 
     # COCO partial map
     if raw in COCO_ASSET_MAP:
@@ -163,14 +254,10 @@ def _draw_annotations(image: np.ndarray, detections: list) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# HuggingFace Road Damage Detector
-# Trained on RDD2022: Japan, India, Norway, Czech, China road images
-# Classes: D00 (longitudinal crack), D10 (alligator), D20 (pothole), D40 (crack)
+# HuggingFace Road Defect Detector
 # ---------------------------------------------------------------------------
 
 class HFRoadDefectDetector:
-    """Downloads and runs keremberke/yolov8n-road-damage-detection from HF Hub."""
-
     def __init__(self):
         self._model = None
         self._load()
@@ -179,24 +266,19 @@ class HFRoadDefectDetector:
         try:
             from huggingface_hub import hf_hub_download
             from ultralytics import YOLO
-
-            cache_dir = cfg.HF_CACHE_DIR or None
-            token     = cfg.HF_TOKEN or None    # None = anonymous (works for public repos)
-
             model_path = hf_hub_download(
                 repo_id=cfg.HF_DEFECT_MODEL_ID,
                 filename=cfg.HF_DEFECT_FILENAME,
-                cache_dir=cache_dir,
-                token=token,
+                cache_dir=cfg.HF_CACHE_DIR or None,
+                token=cfg.HF_TOKEN or None,
             )
             self._model = YOLO(model_path)
-            logger.info("✅ HF road defect model loaded: %s  classes=%s",
+            logger.info("✅ HF road defect model: %s  classes=%s",
                         cfg.HF_DEFECT_MODEL_ID, list(self._model.names.values()))
         except ImportError:
             logger.warning("huggingface_hub not installed — run: pip install huggingface_hub")
         except Exception as exc:
-            logger.warning("Failed to load HF defect model (%s): %s — will use YOLO fallback",
-                           cfg.HF_DEFECT_MODEL_ID, exc)
+            logger.warning("Failed to load HF defect model (%s): %s", cfg.HF_DEFECT_MODEL_ID, exc)
 
     @property
     def available(self) -> bool:
@@ -220,19 +302,13 @@ class HFRoadDefectDetector:
 
 
 # ---------------------------------------------------------------------------
-# Grounding DINO Zero-Shot Asset Detector
-# No training needed — detects objects by text description
+# YOLO-World Zero-Shot Asset Detector (~0.2s/frame on MPS/GPU, ~0.5s CPU)
+# Open-vocabulary detection — no training needed, just set text classes.
 # ---------------------------------------------------------------------------
 
 class ZeroShotAssetDetector:
-    """
-    Uses Grounding DINO to detect toll road assets via text prompts.
-    Slower than YOLO (~1-2s/frame CPU) but requires zero labeling.
-    Recommended for video inspection mode (not realtime camera).
-    """
-
     def __init__(self):
-        self._pipe = None
+        self._model = None
         self._labels = [
             lbl.strip() for lbl in cfg.ZERO_SHOT_ASSET_LABELS.split(",") if lbl.strip()
         ]
@@ -240,64 +316,47 @@ class ZeroShotAssetDetector:
 
     def _load(self):
         try:
-            from transformers import pipeline as hf_pipeline
-            import torch
-
-            device = 0 if (torch.cuda.is_available() or
-                           getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
-                           ) else -1
-
-            self._pipe = hf_pipeline(
-                "zero-shot-object-detection",
-                model=cfg.ZERO_SHOT_MODEL_ID,
-                device=device,
-            )
-            logger.info("✅ Zero-shot asset detector loaded: %s (device=%s)",
-                        cfg.ZERO_SHOT_MODEL_ID, "gpu" if device >= 0 else "cpu")
+            from ultralytics import YOLOWorld
+            self._model = YOLOWorld(cfg.ZERO_SHOT_MODEL_ID)
+            self._model.set_classes(self._labels)
+            logger.info("✅ YOLO-World asset detector: %s  classes=%s",
+                        cfg.ZERO_SHOT_MODEL_ID, self._labels)
         except ImportError:
-            logger.warning("transformers/torch not installed — skipping zero-shot assets. "
-                           "Run: pip install transformers torch")
+            logger.warning("ultralytics not installed — run: pip install ultralytics")
         except Exception as exc:
-            logger.warning("Failed to load zero-shot model: %s", exc)
+            logger.warning("Failed to load YOLO-World model (%s): %s", cfg.ZERO_SHOT_MODEL_ID, exc)
 
     @property
     def available(self) -> bool:
-        return self._pipe is not None
+        return self._model is not None
 
     def detect(self, image: np.ndarray) -> list:
-        from PIL import Image as PILImage
-
-        pil_img = PILImage.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        raw_results = self._pipe(pil_img, candidate_labels=self._labels)
-
+        results = self._model.predict(image, conf=cfg.ZERO_SHOT_THRESHOLD, verbose=False)
         detections = []
-        for det in raw_results:
-            score = det["score"]
-            if score < cfg.ZERO_SHOT_THRESHOLD:
-                continue
-            label = det["label"]
-            cls_name, category = ZERO_SHOT_LABEL_MAP.get(label, (label.replace(" ", "_"), "asset"))
-            box = det["box"]
-            detections.append({
-                "class_name": cls_name,
-                "category":   category,
-                "confidence": round(score, 4),
-                "bbox": {
-                    "x1": float(box["xmin"]), "y1": float(box["ymin"]),
-                    "x2": float(box["xmax"]), "y2": float(box["ymax"]),
-                },
-            })
+        for res in results:
+            for box in res.boxes:
+                raw_cls = res.names[int(box.cls[0])]
+                cls_name, category = ZERO_SHOT_LABEL_MAP.get(
+                    raw_cls, (_normalise_class(raw_cls.replace(" ", "_"))[0], "asset")
+                )
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                detections.append({
+                    "class_name": cls_name,
+                    "category":   category,
+                    "confidence": round(float(box.conf[0]), 4),
+                    "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                })
         return detections
 
 
 # ---------------------------------------------------------------------------
-# Standard YOLO Detector (custom weights OR COCO pretrained fallback)
+# Standard YOLO Detector (custom weights or COCO pretrained fallback)
 # ---------------------------------------------------------------------------
 
 class YOLODetector:
     def __init__(self):
-        self._asset_model   = None
-        self._defect_model  = None
+        self._asset_model    = None
+        self._defect_model   = None
         self._combined_model = None
         self._load()
 
@@ -334,13 +393,9 @@ class YOLODetector:
         return any([self._asset_model, self._defect_model, self._combined_model])
 
     def detect(self, image: np.ndarray, conf: float) -> list:
-        pairs = []
-        if self._asset_model:   pairs.append(self._asset_model)
-        if self._defect_model:  pairs.append(self._defect_model)
-        if self._combined_model: pairs.append(self._combined_model)
-
+        models = [m for m in [self._asset_model, self._defect_model, self._combined_model] if m]
         detections = []
-        for model in pairs:
+        for model in models:
             try:
                 for res in model(image, conf=conf, verbose=False):
                     for box in res.boxes:
@@ -361,42 +416,38 @@ class YOLODetector:
 
 
 # ---------------------------------------------------------------------------
-# Main VisionService — orchestrates all detectors
+# Main VisionService
 # ---------------------------------------------------------------------------
 
 class VisionService:
     def __init__(self):
-        self._hf_defect    = None
-        self._zero_shot    = None
-        self._yolo         = None
+        self._hf_defect       = None
+        self._zero_shot       = None
+        self._yolo            = None
         self._simulation_mode = False
         self._model_info: list[str] = []
         self._load_all()
 
     def _load_all(self):
-        # --- HF road damage model for defects ---
         if cfg.USE_HF_DEFECT_MODEL:
-            logger.info("Loading HuggingFace road defect model: %s", cfg.HF_DEFECT_MODEL_ID)
+            logger.info("Loading HF road defect model: %s", cfg.HF_DEFECT_MODEL_ID)
             self._hf_defect = HFRoadDefectDetector()
             if self._hf_defect.available:
                 self._model_info.append(f"HF defect: {cfg.HF_DEFECT_MODEL_ID}")
 
-        # --- Zero-shot for assets ---
         if cfg.USE_ZERO_SHOT_ASSETS:
             logger.info("Loading zero-shot asset detector: %s", cfg.ZERO_SHOT_MODEL_ID)
             self._zero_shot = ZeroShotAssetDetector()
             if self._zero_shot.available:
                 self._model_info.append(f"ZeroShot assets: {cfg.ZERO_SHOT_MODEL_ID}")
 
-        # --- YOLO (custom or COCO pretrained) ---
         self._yolo = YOLODetector()
         if self._yolo.available:
-            self._model_info.append("YOLO detector loaded")
+            self._model_info.append("YOLO detector")
 
-        # --- Check if anything loaded ---
         if not any([
-            self._hf_defect and self._hf_defect.available,
-            self._zero_shot and self._zero_shot.available,
+            self._hf_defect  and self._hf_defect.available,
+            self._zero_shot  and self._zero_shot.available,
             self._yolo.available,
         ]):
             logger.error("No model loaded — using simulation mode.")
@@ -419,47 +470,55 @@ class VisionService:
         frame_index: int = 0,
         video_timestamp_second: float = 0.0,
         save_files: bool = True,
+        fast_mode: bool = False,
     ) -> dict:
+        """
+        Run inference on raw image bytes.
+
+        fast_mode=True  — skips the zero-shot detector (used for realtime camera
+                          where speed matters more than exhaustive asset coverage).
+        save_files=True — saves annotated + original images to disk and returns URLs.
+                          Base64 annotated image is always returned when detections exist.
+        """
         if self._simulation_mode:
             return self._simulate(session_id, latitude, longitude, location_status,
                                   frame_index, video_timestamp_second)
 
-        # Decode image
         arr = np.frombuffer(image_bytes, np.uint8)
         image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if image is None:
             return {"error": "Could not decode image bytes"}
 
-        # Resize if needed
         h, w = image.shape[:2]
         if w > cfg.INFERENCE_IMAGE_MAX_WIDTH:
             scale = cfg.INFERENCE_IMAGE_MAX_WIDTH / w
             image = cv2.resize(image, (cfg.INFERENCE_IMAGE_MAX_WIDTH, int(h * scale)))
 
-        # Collect raw detections from all available detectors
-        raw_detections = self._run_all_detectors(image)
-
-        # Filter by threshold + assign severity
+        raw_detections = self._run_all_detectors(image, fast_mode=fast_mode)
         detections = self._postprocess(raw_detections)
 
-        # Save files
-        orig_url, ann_url, ann_b64 = None, None, None
-        if save_files:
-            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:20]
-            orig_name = f"inspection_{session_id[:8]}_{ts}_{frame_index:06d}.jpg"
-            ann_name  = f"inspection_{session_id[:8]}_{ts}_{frame_index:06d}_annotated.jpg"
+        # Always generate annotated image in memory (for base64 return)
+        ann_b64 = None
+        ann_url  = None
+        orig_url = None
 
-            cv2.imwrite(str(cfg.STORAGE_DIR / orig_name), image)
+        if detections:
             annotated = _draw_annotations(image, detections)
-            cv2.imwrite(str(cfg.STORAGE_DIR / ann_name), annotated,
-                        [cv2.IMWRITE_JPEG_QUALITY, 88])
-            orig_url = f"/storage/{orig_name}"
-            ann_url  = f"/storage/{ann_name}"
             _, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
             ann_b64 = base64.b64encode(buf).decode("utf-8")
 
+            if save_files:
+                ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:20]
+                orig_name = f"inspection_{session_id[:8]}_{ts}_{frame_index:06d}.jpg"
+                ann_name  = f"inspection_{session_id[:8]}_{ts}_{frame_index:06d}_annotated.jpg"
+                cv2.imwrite(str(cfg.STORAGE_DIR / orig_name), image)
+                cv2.imwrite(str(cfg.STORAGE_DIR / ann_name), annotated,
+                            [cv2.IMWRITE_JPEG_QUALITY, 88])
+                orig_url = f"/storage/{orig_name}"
+                ann_url  = f"/storage/{ann_name}"
+
         return {
-            "detections": detections,
+            "detections":               detections,
             "original_image_url":       orig_url,
             "annotated_image_url":      ann_url,
             "annotated_image_base64":   ann_b64,
@@ -471,35 +530,35 @@ class VisionService:
             "frame_index":              frame_index,
             "video_timestamp_second":   video_timestamp_second,
             "model_info":               self._model_info,
+            "fast_mode":                fast_mode,
         }
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
-    def _run_all_detectors(self, image: np.ndarray) -> list:
+    def _run_all_detectors(self, image: np.ndarray, fast_mode: bool = False) -> list:
         results = []
 
-        # 1. HF road damage model → road defects
+        # 1. HF road damage model → defects
         if self._hf_defect and self._hf_defect.available:
             results.extend(self._hf_defect.detect(image, cfg.CONFIDENCE_THRESHOLD_DEFECT))
 
-        # 2. Zero-shot → assets
-        if self._zero_shot and self._zero_shot.available:
+        # 2. Zero-shot → assets (skipped in fast_mode)
+        if not fast_mode and self._zero_shot and self._zero_shot.available:
             results.extend(self._zero_shot.detect(image))
 
-        # 3. YOLO (only if HF model or zero-shot didn't cover a category)
+        # 3. YOLO — fill gaps not covered by dedicated models
         if self._yolo.available:
-            hf_covered_defects  = bool(self._hf_defect   and self._hf_defect.available)
-            zs_covered_assets   = bool(self._zero_shot   and self._zero_shot.available)
-
-            yolo_raw = self._yolo.detect(image, min(cfg.CONFIDENCE_THRESHOLD_ASSET,
-                                                    cfg.CONFIDENCE_THRESHOLD_DEFECT))
+            hf_covered   = bool(self._hf_defect and self._hf_defect.available)
+            zs_covered   = bool(not fast_mode and self._zero_shot and self._zero_shot.available)
+            yolo_raw = self._yolo.detect(
+                image, min(cfg.CONFIDENCE_THRESHOLD_ASSET, cfg.CONFIDENCE_THRESHOLD_DEFECT)
+            )
             for det in yolo_raw:
-                # Avoid double-counting if a dedicated model already covered this category
-                if det["category"] == "road_defect" and hf_covered_defects:
+                if det["category"] == "road_defect" and hf_covered:
                     continue
-                if det["category"] == "asset" and zs_covered_assets:
+                if det["category"] == "asset" and zs_covered:
                     continue
                 results.append(det)
 
@@ -507,6 +566,8 @@ class VisionService:
 
     def _postprocess(self, raw: list) -> list:
         out = []
+        seen: set[tuple] = set()
+
         for det in raw:
             conf = det["confidence"]
             cat  = det["category"]
@@ -519,13 +580,34 @@ class VisionService:
             if cat == "unknown":
                 continue
 
-            severity = _compute_severity(cls, det["bbox"], conf) if cat == "road_defect" else None
+            bbox = det["bbox"]
+
+            # Aspect-ratio heuristic: street lamps have a lamp-arm that widens
+            # the top of the bounding box (h/w ratio typically < 5).
+            # Utility poles are bare, very narrow columns (h/w ratio > 5).
+            # This catches YOLO-World misclassifying a bare pole as "street lamp".
+            if cls == "street_light":
+                bw = max(1, bbox["x2"] - bbox["x1"])
+                bh = max(1, bbox["y2"] - bbox["y1"])
+                if bh / bw > 5.0:
+                    cls = "utility_pole"
+                    det = {**det, "class_name": "utility_pole"}
+
+            # Deduplicate by class + approximate bbox position
+            cx = round((bbox["x1"] + bbox["x2"]) / 2 / 32)
+            cy = round((bbox["y1"] + bbox["y2"]) / 2 / 32)
+            key = (cls, cx, cy)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            severity = _compute_severity(cls, bbox, conf) if cat == "road_defect" else None
 
             out.append({
                 "class_name":   cls,
                 "category":     cat,
                 "confidence":   round(conf, 4),
-                "bbox":         {k: round(v, 2) for k, v in det["bbox"].items()},
+                "bbox":         {k: round(v, 2) for k, v in bbox.items()},
                 "mask_polygon": None,
                 "severity":     severity,
             })
@@ -548,7 +630,8 @@ class VisionService:
                 "severity": random.choice(["low", "medium", "high"]),
             })
         if random.random() > 0.55:
-            cls = random.choice(["street_light", "guardrail", "traffic_sign"])
+            cls = random.choice(["street_light", "guardrail", "traffic_sign",
+                                  "direction_sign", "billboard"])
             detections.append({
                 "class_name": cls, "category": "asset",
                 "confidence": round(random.uniform(0.50, 0.88), 4),
