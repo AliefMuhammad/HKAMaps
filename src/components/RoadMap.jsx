@@ -78,8 +78,30 @@ function getRoadBounds(roadId, pathGeometry) {
   return [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]];
 }
 
+// SPM/damage type → compact icon for finding markers
+const FINDING_TYPE_ICONS = {
+  pothole:            '⭕',
+  longitudinal_crack: '〰️',
+  transverse_crack:   '➖',
+  alligator_crack:    '🕸️',
+  rutting:            '〽️',
+  raveling:           '🔸',
+  water_ponding:      '💧',
+  patching:           '🔲',
+  surface_depression: '⬇️',
+  shoulder_crack:     '📐',
+  shoulder_pothole:   '🔴',
+  hairline_crack:     '〰️',
+};
+
+const FINDING_SEVERITY_COLORS = {
+  high:   { bg: '#EF4444', border: '#B91C1C', text: '#fff' },
+  medium: { bg: '#F59E0B', border: '#D97706', text: '#fff' },
+  low:    { bg: '#22C55E', border: '#16A34A', text: '#fff' },
+};
+
 export default function RoadMap({
-  tollRoads, damages, assets = [], onMarkerClick, onTollRoadClick, viewState,
+  tollRoads, damages, assets = [], findings = [], onMarkerClick, onTollRoadClick, viewState,
   isEditingRoute, editCoordinates, setEditCoordinates,
   kmzData, kmzBounds
 }) {
@@ -90,9 +112,10 @@ export default function RoadMap({
   const [legendTab, setLegendTab] = useState('damage'); // 'damage' | 'assets' | 'road'
 
   // Master visibility toggles
-  const [showDamages, setShowDamages] = useState(true);
-  const [showAssets, setShowAssets]   = useState(true);
-  const [showKmz, setShowKmz]         = useState(true);
+  const [showDamages, setShowDamages]   = useState(true);
+  const [showAssets, setShowAssets]     = useState(true);
+  const [showFindings, setShowFindings] = useState(true);
+  const [showKmz, setShowKmz]           = useState(true);
 
   // Per-type filters
   const [activeSeverities, setActiveSeverities] = useState(new Set(ALL_SEVERITIES));
@@ -165,6 +188,17 @@ export default function RoadMap({
       : damages.filter(d => isInBounds(mapBounds, Number(d.lng), Number(d.lat)));
     return base.filter(d => showDamages && activeSeverities.has(d.severity));
   }, [damages, mapBounds, viewState, showDamages, activeSeverities]);
+
+  const visibleFindings = useMemo(() => {
+    if (!showFindings) return [];
+    return findings.filter(f => {
+      if (!f.latitude || !f.longitude) return false;
+      if (mapBounds && viewState !== 'detail') {
+        if (!isInBounds(mapBounds, f.longitude, f.latitude)) return false;
+      }
+      return true;
+    });
+  }, [findings, mapBounds, viewState, showFindings]);
 
   const visibleAssets = useMemo(() => {
     const base = (viewState === 'detail' || !mapBounds)
@@ -432,6 +466,19 @@ export default function RoadMap({
           </Marker>
         ))}
 
+        {/* AI Road Findings Markers (road_findings table) */}
+        {visibleFindings.map(f => (
+          <Marker
+            key={`finding-${f.finding_id}`}
+            longitude={f.longitude}
+            latitude={f.latitude}
+            anchor="bottom"
+            onClick={e => { e.originalEvent.stopPropagation(); onMarkerClick({ ...f, _type: 'finding' }); }}
+          >
+            <FindingMarkerIcon finding={f} />
+          </Marker>
+        ))}
+
         {/* Toll Road Name Labels */}
         {viewState === 'dashboard' && visibleTollLabels.map(r => {
           const coords = TOLL_POLYLINES[r.id];
@@ -462,6 +509,7 @@ export default function RoadMap({
           <div className="px-3 pb-2 flex gap-1.5 flex-wrap">
             <CountChip color="#EF4444" label={`${visibleDamages.length} kerusakan`} />
             <CountChip color="#3B82F6" label={`${visibleAssets.length} aset`} />
+            <CountChip color="#8B5CF6" label={`${visibleFindings.length} findings AI`} />
           </div>
 
           {/* Tab selector */}
@@ -522,6 +570,31 @@ export default function RoadMap({
                     onToggle={() => setActiveAssetTypes(prev => { const n = new Set(prev); n.has(type) ? n.delete(type) : n.add(type); return n; })}
                   />
                 ))}
+              </div>
+            )}
+
+            {/* ─── FINDINGS TAB (AI road_findings) ─── */}
+            {legendTab === 'damage' && visibleFindings.length > 0 && (
+              <div className="border-t border-surface-100 mt-2 pt-2 space-y-1">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] text-purple-600 font-semibold flex items-center gap-1">
+                    🔬 AI Findings
+                  </span>
+                  <MasterToggle checked={showFindings} onChange={setShowFindings} />
+                </div>
+                {['high','medium','low'].map(sev => {
+                  const c = visibleFindings.filter(f => f.severity === sev).length;
+                  if (!c) return null;
+                  const color = sev === 'high' ? '#EF4444' : sev === 'medium' ? '#F59E0B' : '#22C55E';
+                  const label = sev === 'high' ? 'Parah' : sev === 'medium' ? 'Sedang' : 'Ringan';
+                  return (
+                    <div key={sev} className="flex items-center gap-2 py-0.5">
+                      <svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 0 L12 6 L6 12 L0 6 Z" fill={color}/></svg>
+                      <span className="text-[10px] text-surface-500">{label}</span>
+                      <span className="ml-auto text-[10px] font-semibold" style={{ color }}>{c}</span>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
@@ -616,6 +689,37 @@ function FilterRow({ icon, label, count, active, disabled, onToggle }) {
         {active && !disabled && <svg width="8" height="8" viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>}
       </div>
     </button>
+  );
+}
+
+function FindingMarkerIcon({ finding }) {
+  const sev = finding.severity || 'low';
+  const colors = FINDING_SEVERITY_COLORS[sev] || FINDING_SEVERITY_COLORS.low;
+  const icon = FINDING_TYPE_ICONS[finding.damage_type] || '🔍';
+  return (
+    <div
+      className="relative cursor-pointer group hover:scale-110 transition-transform"
+      title={`${finding.damage_type_label || finding.damage_type} — ${finding.spm_indicator || ''} (${sev})`}
+      style={{ filter: `drop-shadow(0 2px 5px ${colors.bg}80)` }}
+    >
+      {/* Diamond shape for findings — distinct from damage triangles */}
+      <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+        <path d="M16 2 L30 16 L16 30 L2 16 Z"
+          fill={colors.bg} stroke={colors.border} strokeWidth="2" />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center text-[11px] leading-none">
+        {icon}
+      </div>
+      {/* SPM badge */}
+      {finding.spm_indicator && (
+        <div
+          className="absolute -top-1.5 -right-1 text-[7px] font-bold rounded px-0.5 leading-tight text-white"
+          style={{ background: colors.border }}
+        >
+          {finding.spm_indicator}
+        </div>
+      )}
+    </div>
   );
 }
 

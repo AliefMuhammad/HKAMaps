@@ -23,7 +23,7 @@ import DamageModal from './components/DamageModal';
 export default function App() {
   const { user, logout } = useAuth();
   // ---- data from Supabase or mock ----
-  const { tollRoads, segments, damages, assets, loading, error, usingMock, updateTollRoadGeometry, refetch } = useAppData();
+  const { tollRoads, segments, damages, assets, findings, loading, error, usingMock, updateTollRoadGeometry, refetch } = useAppData();
   const navigate = useNavigate();
 
   const [viewState, setViewState] = useState('dashboard');       // dashboard | detail | 3d
@@ -258,6 +258,7 @@ export default function App() {
                 tollRoads={viewState === 'dashboard' ? regionRoads : (selectedTollRoad ? [selectedTollRoad] : [])}
                 damages={segmentDamages}
                 assets={tollRoadAssets}
+                findings={findings}
                 onMarkerClick={setModalReport}
                 onTollRoadClick={goToDetail}
                 viewState={viewState}

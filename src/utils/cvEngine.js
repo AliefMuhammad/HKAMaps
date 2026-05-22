@@ -25,26 +25,38 @@ const ROBOFLOW_WORKFLOW  = import.meta.env.VITE_ROBOFLOW_WORKFLOW  || 'highway-p
 // Class taxonomy (kept for Roboflow fallback + UI labelling)
 // ---------------------------------------------------------------------------
 const DAMAGE_CLASS_MAP = {
-  pothole:             'Lubang',
-  'longitudinal_crack':'Retak Memanjang',
-  'longitudinal-crack':'Retak Memanjang',
-  'transverse_crack':  'Retak Melintang',
-  'transverse-crack':  'Retak Melintang',
-  'alligator_crack':   'Retak Buaya',
-  'alligator-crack':   'Retak Buaya',
-  hairline_crack:      'Retak Rambut',
-  patching:            'Tambalan',
-  rutting:             'Alur',
-  surface_depression:  'Penurunan Permukaan',
-  crack:               'Retak Memanjang',
+  // Core RDD2022 classes
+  pothole:              'Lubang',
+  'longitudinal_crack': 'Retak Memanjang',
+  'longitudinal-crack': 'Retak Memanjang',
+  'transverse_crack':   'Retak Melintang',
+  'transverse-crack':   'Retak Melintang',
+  'alligator_crack':    'Retak Buaya',
+  'alligator-crack':    'Retak Buaya',
+  hairline_crack:       'Retak Rambut',
+  patching:             'Tambalan',
+  rutting:              'Alur',
+  surface_depression:   'Penurunan Permukaan',
+  crack:                'Retak Memanjang',
+  // Extended JICA AMS classes
+  raveling:             'Pelepasan Butir',
+  water_ponding:        'Genangan Air',
+  shoulder_crack:       'Retak Bahu Jalan',
+  shoulder_pothole:     'Lubang Bahu Jalan',
+  // RDD code aliases (corrected mapping)
   D00: 'Retak Memanjang',
-  D01: 'Retak Melintang',
-  D10: 'Retak Buaya',
-  D11: 'Retak Buaya',
-  D20: 'Lubang',
-  D40: 'Retak Memanjang',
-  D43: 'Retak Melintang',
+  D10: 'Retak Melintang',
+  D20: 'Retak Buaya',
+  D40: 'Lubang',
+  D43: 'Lubang',
   D44: 'Lubang',
+  D50: 'Tambalan',
+  D60: 'Pelepasan Butir',
+  D70: 'Genangan Air',
+  D80: 'Alur',
+  D81: 'Penurunan Permukaan',
+  D90: 'Retak Bahu Jalan',
+  D91: 'Lubang Bahu Jalan',
 };
 
 const ASSET_CLASS_MAP = {
@@ -491,6 +503,7 @@ function _xyxy_to_xywh(bbox) {
 }
 
 function _normaliseVideoJobResult(jobStatus) {
+  const isSimulation = (jobStatus.results || []).some(r => r.simulation_mode);
   return {
     jobId:          jobStatus.job_id,
     sessionId:      jobStatus.session_id,
@@ -498,6 +511,7 @@ function _normaliseVideoJobResult(jobStatus) {
     framesProcessed: jobStatus.frames_processed,
     detectionsCount: jobStatus.detections_count,
     eventsCount:    jobStatus.events_count,
+    simulationMode: isSimulation,
     results: (jobStatus.results || []).map(r => ({
       ..._normaliseBackendResult(r),
       frameIndex:           r.frame_index,

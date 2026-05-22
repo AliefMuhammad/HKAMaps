@@ -8,5 +8,15 @@ aiofiles>=23.2.0
 huggingface_hub>=0.24.0
 Pillow>=10.0.0
 
-# Zero-shot asset detection (YOLO-World) — already included via ultralytics>=8.3.0
-# ultralytics.YOLOWorld is bundled — no extra install needed.
+# Stage 3 measurement: skeletonization for accurate crack length estimation.
+# Falls back to contour-based estimation if not installed.
+# License: BSD-3-Clause
+scikit-image>=0.22.0
+
+# Supabase client for road_findings DB integration
+supabase>=2.4.0
+
+# Optional: SegFormer deep ROI segmenter (ENABLE_DEEP_SEGMENTER=true)
+# Uncomment to enable — adds ~1.5 GB to image size
+# transformers>=4.40.0
+# torch>=2.0.0

@@ -494,6 +494,16 @@ function ResultsView({ jobResult, onBack, onUpload, isUploadingDb, uploadedCount
         </div>
       </div>
 
+      {/* Simulation mode warning */}
+      {jobResult.simulationMode && (
+        <div className="px-4 py-2 bg-amber-500/15 border-b border-amber-500/30 shrink-0 flex items-center gap-2">
+          <AlertTriangle size={13} className="text-amber-400 shrink-0" />
+          <p className="text-amber-300 text-xs">
+            <span className="font-bold">Mode Simulasi</span> — Model AI tidak terdeteksi. Hasil ini adalah data dummy, bukan inferensi nyata.
+          </p>
+        </div>
+      )}
+
       {/* Stats panel */}
       <div className="px-4 pt-4 pb-3 border-b border-white/10 shrink-0">
         <div className="grid grid-cols-3 gap-2 mb-2">

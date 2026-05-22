@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase, isSupabaseConnected } from '../supabaseClient';
-import { TOLL_ROADS, ROAD_SEGMENTS, DAMAGE_REPORTS, TOLL_ASSETS } from '../data/mockData';
+import { TOLL_ROADS, ROAD_SEGMENTS, DAMAGE_REPORTS, TOLL_ASSETS, ROAD_FINDINGS_MOCK } from '../data/mockData';
 
 /**
  * Custom hook: Mengambil data dari Supabase jika terkoneksi,
@@ -14,6 +14,7 @@ export function useAppData() {
   const [segments, setSegments] = useState([]);
   const [damages, setDamages] = useState([]);
   const [assets, setAssets] = useState([]);
+  const [findings, setFindings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [usingMock, setUsingMock] = useState(false);
@@ -29,6 +30,7 @@ export function useAppData() {
       setSegments(ROAD_SEGMENTS);
       setDamages(DAMAGE_REPORTS);
       setAssets(TOLL_ASSETS || []);
+      setFindings(ROAD_FINDINGS_MOCK || []);
       setUsingMock(true);
       setLoading(false);
       return;
@@ -60,25 +62,37 @@ export function useAppData() {
         if (!assetRes.error) assetsData = assetRes.data || [];
       } catch (_) { /* table doesn't exist yet */ }
 
+      // Fetch road_findings (graceful — new table, may not exist yet)
+      let findingsData = [];
+      try {
+        const findRes = await supabase
+          .from('road_findings')
+          .select('finding_id,toll_road_id,segment_id,latitude,longitude,damage_type,damage_type_label,severity,confidence_score,spm_indicator,spm_name,recommended_action,annotated_image_url,status,detected_at,chainage_km,direction,lane,estimated_area_px,estimated_length_px,ensemble_sources')
+          .order('detected_at', { ascending: false })
+          .limit(500);
+        if (!findRes.error) findingsData = findRes.data || [];
+      } catch (_) { /* table doesn't exist yet — migration not run */ }
+
       setTollRoads(tollRes.data);
       setSegments(segRes.data);
       setDamages(dmgRes.data);
       setAssets(assetsData);
+      setFindings(findingsData);
       setUsingMock(false);
 
       console.log(
         `✅ Data Supabase dimuat: ${tollRes.data.length} ruas, ` +
         `${segRes.data.length} segmen, ${dmgRes.data.length} laporan kerusakan, ` +
-        `${assetsData.length} aset`
+        `${assetsData.length} aset, ${findingsData.length} findings AI`
       );
     } catch (err) {
       console.error('❌ Gagal memuat dari Supabase, fallback ke mock:', err);
       setError(err.message);
-      // Fallback ke mock data
       setTollRoads(TOLL_ROADS);
       setSegments(ROAD_SEGMENTS);
       setDamages(DAMAGE_REPORTS);
       setAssets(TOLL_ASSETS || []);
+      setFindings(ROAD_FINDINGS_MOCK || []);
       setUsingMock(true);
     } finally {
       setLoading(false);
@@ -111,9 +125,19 @@ export function useAppData() {
       })
       .subscribe();
 
+    // Subscribe ke road_findings baru dari inspeksi AI
+    const findingChannel = supabase
+      .channel('realtime-findings')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'road_findings' }, (payload) => {
+        console.log('📡 Realtime: finding AI baru:', payload.new);
+        setFindings(prev => [payload.new, ...prev]);
+      })
+      .subscribe();
+
     return () => {
       supabase.removeChannel(dmgChannel);
       supabase.removeChannel(assetChannel);
+      supabase.removeChannel(findingChannel);
     };
   }, []);
 
@@ -146,5 +170,5 @@ export function useAppData() {
     }
   };
 
-  return { tollRoads, segments, damages, assets, loading, error, usingMock, updateTollRoadGeometry, refetch: fetchData };
+  return { tollRoads, segments, damages, assets, findings, loading, error, usingMock, updateTollRoadGeometry, refetch: fetchData };
 }
